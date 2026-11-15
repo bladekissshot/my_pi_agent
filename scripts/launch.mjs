@@ -11,7 +11,11 @@ let config = {};
 try { config = JSON.parse(await fs.readFile(path.join(root, '.local/runtime.json'), 'utf8')); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
 const env = { ...process.env };
-if (config.agentDir) env.PI_CODING_AGENT_DIR = config.agentDir;
+if (config.agentDir) env.PI_CODING_AGENT_DIR = path.resolve(root, config.agentDir);
+if (env.PI_CODING_AGENT_DIR) {
+  const directory = path.resolve(env.PI_CODING_AGENT_DIR);
+  if (directory.startsWith(root + path.sep) && !directory.startsWith(path.join(root, '.local') + path.sep)) throw new Error('Keep agent data outside tracked source, or under the ignored .local directory.');
+}
 if (config.workspaceRoot) env.PI_WEB_DEFAULT_CWD_ROOT = config.workspaceRoot;
 const port = config.webPort ?? 30141;
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid local Web port.');

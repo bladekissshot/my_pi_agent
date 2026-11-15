@@ -16,8 +16,11 @@
 **/models-store.json
 **/settings.json
 **/.pi/
-**/sessions/
-**/runs/
+/sessions/
+/runs/
+**/*.jsonl
+**/prompt-manager/catalog.json
+**/prompt-manager/sessions/
 **/*.pem
 **/*.key
 **/*.p12

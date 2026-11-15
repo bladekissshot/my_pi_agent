@@ -61,7 +61,8 @@ export async function audit({ history = false, privateDir } = {}) {
     try { bytes = await fs.readFile(absolute); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     const publicBlob = publicBlobs.has(blobId(bytes)) || publicBlobs.has(blobId(Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n'))));
     const rules = inspectContent(bytes, { ...fingerprints, publicBlob });
-    if (!publicBlob && /(^|\/)(?:\.local|node_modules|\.next|sessions|runs)(\/|$)/.test(file)) rules.push('runtime-data');
+    if (!publicBlob && (/(^|\/)(?:\.local|node_modules|\.next)(\/|$)/.test(file)
+        || /^(?:sessions|runs)\//.test(file) || file.endsWith('.jsonl') || /prompt-manager\/(?:catalog\.json|sessions\/)/.test(file))) rules.push('runtime-data');
     if (!publicBlob && /(^|\/)(?:auth\.json|models\.json|settings\.json|\.npmrc|\.env(?:\.[^/]+)?)$/.test(file) && !file.endsWith('.env.example')) rules.push('runtime-configuration');
     for (const rule of rules) findings.push({ scope: 'working-tree', file, rule });
   }
