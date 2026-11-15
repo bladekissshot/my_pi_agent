@@ -38,15 +38,19 @@ test('subtree synchronization preserves local files and records only the chosen 
     await fs.writeFile(path.join(repo, 'local.txt'), 'custom work');
     git(['add', 'upstreams.lock.json', 'local.txt'], repo); git(['commit', '-qm', 'fixture custom work'], repo);
     await fs.writeFile(path.join(upstream, 'version.txt'), 'v2');
-    git(['add', 'version.txt'], upstream); git(['commit', '-qm', 'fixture v2'], upstream); git(['tag', 'v2'], upstream);
+    git(['add', 'version.txt'], upstream); git(['commit', '-qm', 'fixture v2'], upstream); git(['tag', '-a', 'v2', '-m', 'fixture annotated release'], upstream);
     command(process.execPath, ['scripts/sync-upstream.mjs', 'pi', 'v2'], repo);
     assert.equal(await fs.readFile(path.join(repo, 'projects/pi/version.txt'), 'utf8'), 'v2');
     assert.equal(await fs.readFile(path.join(repo, 'local.txt'), 'utf8'), 'custom work');
     const result = JSON.parse(await fs.readFile(path.join(repo, 'upstreams.lock.json'), 'utf8'));
     assert.equal(result.sources.pi.ref, 'v2'); assert.equal(result.sources.pi.snapshotCommits.length, 2);
+    assert.equal(result.sources.pi.commit, git(['rev-parse', 'v2^{commit}'], upstream));
     assert.equal(result.sources['pi-web'].ref, 'unchanged');
     assert.ok(git(['branch', '--show-current'], repo).startsWith('codex/sync-pi-'));
     assert.equal(git(['status', '--porcelain'], repo), '');
+    const unchangedHead = git(['rev-parse', 'HEAD'], repo);
+    command(process.execPath, ['scripts/sync-upstream.mjs', 'pi', 'v2'], repo);
+    assert.equal(git(['rev-parse', 'HEAD'], repo), unchangedHead, 'same-version synchronization must not commit or rebranch');
   } finally {
     assert.ok(path.resolve(temp).startsWith(path.resolve(os.tmpdir()) + path.sep));
     assert.ok(path.basename(temp).startsWith('my-pi-sync-test-'));

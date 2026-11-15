@@ -16,7 +16,7 @@ const remotes = run('git', ['remote'], root, { capture: true }).split('\n');
 if (!remotes.includes(upstream.remote)) run('git', ['remote', 'add', upstream.remote, upstream.url]);
 else if (run('git', ['config', '--get', `remote.${upstream.remote}.url`], root, { capture: true }) !== upstream.url) throw new Error('Upstream remote URL does not match the lock file.');
 run('git', ['fetch', '--no-tags', '--depth=1', upstream.remote, ref]);
-const commit = run('git', ['rev-parse', 'FETCH_HEAD'], root, { capture: true });
+const commit = run('git', ['rev-parse', 'FETCH_HEAD^{commit}'], root, { capture: true });
 if (commit === upstream.commit && ref === upstream.ref) {
   console.log(`${name} already matches the reviewed upstream revision.`);
   process.exit(0);
