@@ -18,7 +18,9 @@ export function normalizeSlashes(filePath: string): string {
 
 export function getAdditionalAllowedRoots(): Set<string> {
   if (!globalThis.__piAdditionalAllowedRoots) {
-    globalThis.__piAdditionalAllowedRoots = new Set();
+    globalThis.__piAdditionalAllowedRoots = new Set(
+      process.env.PI_WEB_DEFAULT_CWD_ROOT ? [normalizeSlashes(process.env.PI_WEB_DEFAULT_CWD_ROOT)] : [],
+    );
   }
   return globalThis.__piAdditionalAllowedRoots;
 }

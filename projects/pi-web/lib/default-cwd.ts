@@ -14,6 +14,6 @@ export function localDateStamp(now = new Date()): string {
   return `${year}${month}${day}`;
 }
 
-export function defaultCwdPath(now = new Date(), home = homedir()): string {
-  return path.join(home, DEFAULT_CWD_PARENT, localDateStamp(now));
+export function defaultCwdPath(now = new Date(), home = homedir(), workspaceRoot?: string): string {
+  return path.join(workspaceRoot || path.join(home, DEFAULT_CWD_PARENT), localDateStamp(now));
 }

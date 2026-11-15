@@ -1,0 +1,46 @@
+{
+  "name": "pi-prompt-manager",
+  "version": "0.1.0",
+  "description": "Prompt templates with immutable per-session snapshots for Pi and Pi Web",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./lib/core.d.ts",
+      "import": "./lib/core.mjs"
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/prompts.ts"
+    ]
+  },
+  "dependencies": {
+    "proper-lockfile": "4.1.2"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.5.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "presets",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bladekissshot/my_pi_agent.git",
+    "directory": "plugins/prompt-manager"
+  },
+  "bugs": {
+    "url": "https://github.com/bladekissshot/my_pi_agent/issues"
+  },
+  "homepage": "https://github.com/bladekissshot/my_pi_agent/tree/main/plugins/prompt-manager"
+}

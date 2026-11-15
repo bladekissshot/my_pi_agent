@@ -22,3 +22,9 @@ test("places the dated folder under ~/pi-cwd", () => {
     path.join(home, "pi-cwd", "20260929"),
   );
 });
+
+test("uses an explicitly configured workspace root without changing the user's home", () => {
+  const home = path.join(os.tmpdir(), "pi-web-home");
+  const workspace = path.join(os.tmpdir(), "pi-web-workspaces");
+  assert.equal(defaultCwdPath(new Date(2026, 10, 15), home, workspace), path.join(workspace, "20261115"));
+});

@@ -1,5 +1,9 @@
 # Tool selection and built-in extensions
 
+## Local prompt-manager integration
+
+The System tab's CRUD controls call `/api/prompts`, backed by the shared `pi-prompt-manager` package. Enabling a template changes only the default for future sessions. `prepareSessionPrompt()` snapshots the template before a new runtime starts; resource-loader overrides and a public `before_agent_start` hook restore it on reload and later turns. The template text and version are also saved in a custom transcript entry and immutable sidecar. Edits, deletes, default changes, model/tool changes and forks never rebind an existing session. An empty composer's System tab must not call its system-info loader before template selection, since that would create and pin the runtime prematurely. Subagent role profiles remain independently controlled.
+
 ## New session tool preset
 Tool names are passed at session creation (`POST /api/agent/new` → `toolNames[]`) and persisted in versioned `pi-web:tool-selection` custom entries (ADR 0002). No entry, or a later `cleared: true` one, means no pin: the session follows pi's `defaultTools`, as the `configured` preset ("From settings.json defaultTools") does by sending no `toolNames`. An empty array is Chat only, resolved before services are created: no extensions/skills/prompts/themes, and the ordered contents of Pi's discovered context files replace Pi's base prompt. Crossing the Chat-only boundary or clearing a pin rebuilds the wrapper; changing between nonempty presets updates it in place.
 

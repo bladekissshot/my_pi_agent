@@ -1,0 +1,20 @@
+{
+  "name": "my-pi-agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "bootstrap": "node scripts/task.mjs bootstrap",
+    "build:pi": "node scripts/task.mjs build-pi",
+    "build:web": "node scripts/task.mjs build-web",
+    "test": "node scripts/task.mjs test",
+    "check:web": "node scripts/task.mjs check-web",
+    "launch:cli": "node scripts/launch.mjs cli",
+    "launch:web": "node scripts/launch.mjs web",
+    "sync:pi": "node scripts/sync-upstream.mjs pi",
+    "sync:pi-web": "node scripts/sync-upstream.mjs pi-web",
+    "audit:public": "node scripts/audit-public.mjs",
+    "test:tooling": "node --test scripts/*.test.mjs"
+  }
+}

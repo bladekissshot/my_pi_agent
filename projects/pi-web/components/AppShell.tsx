@@ -453,7 +453,7 @@ export function AppShell() {
   ) => {
     const opening = activeTopPanel !== panel;
     toggleTopPanel(panel, keepMobileToolbarOpen);
-    if (!opening || systemInfoLoading) return;
+    if (!opening || systemInfoLoading || (panel === "system" && !selectedSession)) return;
 
     const load = systemInfoLoaderRef.current;
     if (!load) return;
@@ -466,7 +466,7 @@ export function AppShell() {
         setSystemInfoLoading(false);
       }
     });
-  }, [activeTopPanel, systemInfoLoading, toggleTopPanel]);
+  }, [activeTopPanel, systemInfoLoading, toggleTopPanel, selectedSession]);
 
   const openSessionStatsPanel = useCallback(() => {
     if (isMobile) setSidebarOpen(false);
@@ -2586,6 +2586,7 @@ export function AppShell() {
               )}
               {activeTopPanel === "system" && (
                 <SystemPromptPanel
+                  sessionId={activeFileTabId?.startsWith("agent:") ? activeFileTabId.slice(6) : selectedSession?.id}
                   loading={systemInfoLoading}
                   prompt={systemPrompt}
                   translate={translate}

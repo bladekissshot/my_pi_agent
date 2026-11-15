@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { isDeepStrictEqual } from "util";
+import { prepareSessionPrompt, sessionPromptExtension } from "./prompt-manager";
 import { validateAgentImages } from "./image-attachments";
 import { cwdMissingError } from "./missing-cwd";
 import { invalidateModelsCache } from "./models-cache";
@@ -265,6 +266,7 @@ const COMMANDS_ALLOWED_DURING_SESSION_REPLACEMENT = new Set([
 ]);
 
 export interface RpcSessionStartOptions {
+  promptProfileId?: string | null;
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
   allowInitialModelFallback?: boolean;
@@ -3140,6 +3142,11 @@ export async function startRpcSession(
         ? undefined
         : projectTrustReloadOptions(sessionCwd, agentDir);
     const settingsManager = SettingsManager.create(sessionCwd, agentDir);
+    const promptBinding = subagentResources ? null : await prepareSessionPrompt(sessionManager, settingsManager, sessionCwd, options.promptProfileId);
+    const promptOverrides = promptBinding ? {
+      systemPromptOverride: () => promptBinding.prompt.customPrompt ?? undefined,
+      appendSystemPromptOverride: () => [promptBinding.prompt.appendSystemPrompt],
+    } : {};
     // Here the allow-list is the point: extensions stay loaded, their tools and what
     // the parent did not have stay out of the registry.
     if (sideChatTools) toolsOption = resolveShellTools(selectedToolNames ?? [], settingsManager.getDefaultTools());
@@ -3203,9 +3210,11 @@ export async function startRpcSession(
             appendSystemPrompt: subagentResources.appendSystemPrompt,
           }
         : chatOnly
-          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [exactSystemPromptExtension] }
+          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, ...promptOverrides, extensionFactories: [exactSystemPromptExtension] }
         : {
+            ...promptOverrides,
             extensionFactories: [
+              ...(promptBinding ? [sessionPromptExtension(promptBinding)] : []),
               ...(builtins?.extensions ?? []),
               createReadOnlyMcpPolicyExtension(),
               createProjectCommandBashExtension({
@@ -3334,8 +3343,10 @@ export async function startRpcSession(
     skillsBinding?.setActiveToolsGetter(() => inner.getActiveToolNames());
     const exactSystemPrompt = subagentResources
       ? skillsBinding!.getExactSystemPrompt
+      : promptBinding?.prompt.forceSystemPrompt !== null && promptBinding?.prompt.forceSystemPrompt !== undefined
+        ? () => promptBinding.prompt.forceSystemPrompt!
       : chatOnly
-        ? () => contextFilesSystemPrompt(inner.resourceLoader.getAgentsFiles().agentsFiles)
+        ? () => [promptBinding?.prompt.appendSystemPrompt, contextFilesSystemPrompt(inner.resourceLoader.getAgentsFiles().agentsFiles)].filter(Boolean).join("\n\n")
         : undefined;
     exactSystemPromptRef.current = exactSystemPrompt;
     const mcpHost = builtins?.mcpHost ?? subagentMcp?.mcpHost;

@@ -1,0 +1,300 @@
+{
+  "providers": {
+    "modelhub": {
+      "name": "ModelHub",
+      "baseUrl": "https://api.example.invalid/v1",
+      "apiKey": "${PI_PROVIDER_API_KEY}",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "gpt-6-astra",
+          "name": "GPT-6 Astra",
+          "api": "openai-responses",
+          "baseUrl": "https://api.example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 536870912,
+            "images": {
+              "maxPerRequest": 1500,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          }
+        },
+        {
+          "id": "claude-opus-5-5",
+          "name": "Claude Opus 5.5",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.example.invalid",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 33554432,
+            "images": {
+              "maxPerRequest": 600,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
+          }
+        },
+        {
+          "id": "gemini-4-argon",
+          "name": "Gemini 4 Argon",
+          "api": "google-generative-ai",
+          "baseUrl": "https://api.example.invalid/v1beta",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 20971520,
+            "images": {
+              "maxPerRequest": 3600,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1048576,
+          "maxTokens": 32768,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": null,
+            "max": null
+          }
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.example.invalid",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": null,
+            "medium": null,
+            "high": "high",
+            "max": "max"
+          }
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol",
+          "api": "openai-responses",
+          "baseUrl": "https://api.example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 536870912,
+            "images": {
+              "maxPerRequest": 1500,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          }
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "name": "GPT-6.1 Terra",
+          "api": "openai-responses",
+          "baseUrl": "https://api.example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 536870912,
+            "images": {
+              "maxPerRequest": 1500,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": "none",
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          }
+        },
+        {
+          "id": "deepseek-flash",
+          "name": "DeepSeek Flash",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.example.invalid",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "images": {
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": "max"
+          }
+        },
+        {
+          "id": "deepseek-flash-cyber",
+          "name": "DeepSeek Flash Cyber",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.example.invalid",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "images": {
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": null,
+            "high": "high",
+            "max": "max"
+          }
+        },
+        {
+          "id": "claude-fable-5-1",
+          "name": "Claude Fable 5.1",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.example.invalid",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "inputLimits": {
+            "maxRequestBytes": 33554432,
+            "images": {
+              "maxPerRequest": 600,
+              "resize": {
+                "maxWidth": 2000,
+                "maxHeight": 2000,
+                "maxBytes": 4718592,
+                "jpegQuality": 80
+              }
+            }
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsMidConvoEffort": true,
+            "supportsTemperature": false
+          }
+        }
+      ]
+    }
+  }
+}

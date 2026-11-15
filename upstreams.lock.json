@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "strategy": "git-subtree-squash",
+  "sources": {
+    "pi": {
+      "remote": "upstream-pi",
+      "url": "https://github.com/earendil-works/pi.git",
+      "prefix": "projects/pi",
+      "ref": "v1.5.0",
+      "commit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+      "snapshotCommits": [
+        "7d44d5554b48b839f17bc7de805a0e5466792b06"
+      ]
+    },
+    "pi-web": {
+      "remote": "upstream-pi-web",
+      "url": "https://github.com/agegr/pi-web.git",
+      "prefix": "projects/pi-web",
+      "ref": "v0.15.0",
+      "commit": "f130910abf662b506b2ef2f475fc21a2fe57badc",
+      "snapshotCommits": [
+        "9015d10a49b0eca52fcfc5cd5c639ca25ab414f3"
+      ]
+    }
+  }
+}

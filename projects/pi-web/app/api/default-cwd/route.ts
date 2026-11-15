@@ -7,7 +7,7 @@ import { defaultCwdPath } from "@/lib/default-cwd";
 // The client then selects it through /api/cwd/validate like any other directory.
 export async function POST() {
   try {
-    const dir = defaultCwdPath();
+    const dir = defaultCwdPath(undefined, undefined, process.env.PI_WEB_DEFAULT_CWD_ROOT);
     mkdirSync(dir, { recursive: true });
     return NextResponse.json({ cwd: dir });
   } catch (error) {

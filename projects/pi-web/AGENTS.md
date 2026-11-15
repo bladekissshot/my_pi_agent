@@ -50,6 +50,7 @@ app/api/
   sessions/[id]/auto-name/route.ts POST generate a session title
   sessions/search/route.ts         GET session search
   agent/new/route.ts               POST { cwd, type: prompt|ensure_session (start only), message?, toolNames?, provider?, modelId?, thinkingLevel? }
+  prompts/route.ts                 GET catalog and fixed session snapshot | POST create/update/delete/activate, through shared pi-prompt-manager
   agent/[id]/route.ts              GET state (?systemPrompt=0: without the prompt) | POST any command
   agent/[id]/events/route.ts       GET SSE stream
   agent/[id]/lease/route.ts        POST reset the selected session's idle timer (with or without its stream; never starts one); reply: running, awaitingInput, subagentsActive
