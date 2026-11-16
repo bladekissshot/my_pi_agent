@@ -16,6 +16,17 @@ try {
 // swaps it for an equivalent built at runtime; both bundlers must run it.
 const gfmAutolinkEmailLoader = join(configDir, "lib/gfm-autolink-email-loader.cjs");
 
+// In the monorepo these ESM runtimes are linked outside node_modules. Next's
+// serverExternalPackages matches the resolved node_modules path and otherwise
+// bundles them, breaking SDK dynamic imports. Keep native imports on the server.
+const localRuntimePackages = [
+  "pi-prompt-manager",
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-agent-core",
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-tui",
+];
+
 const nextConfig: NextConfig = {
   outputFileTracingRoot: configDir,
   experimental: {
@@ -34,7 +45,18 @@ const nextConfig: NextConfig = {
       "**/mdast-util-gfm-autolink-literal/lib/index.js": { loaders: [gfmAutolinkEmailLoader] },
     },
   },
-  webpack(config) {
+  webpack(config, { isServer }) {
+    if (isServer) {
+      config.externals.unshift((
+        { request }: { request?: string },
+        callback: (error: Error | null, result?: string) => void,
+      ) => {
+        const isRuntime = request && localRuntimePackages.some((name) => (
+          request === name || request.startsWith(`${name}/`)
+        ));
+        callback(null, isRuntime ? `import ${request}` : undefined);
+      });
+    }
     config.module.rules.push({
       test: /[\\/]mdast-util-gfm-autolink-literal[\\/]lib[\\/]index\.js$/,
       loader: gfmAutolinkEmailLoader,
@@ -45,14 +67,10 @@ const nextConfig: NextConfig = {
   // lazy diagram chunks are full of class `static {}` blocks (#753).
   transpilePackages: ["mermaid", "@mermaid-js/parser"],
   serverExternalPackages: [
-    "pi-prompt-manager",
+    ...localRuntimePackages,
     "node-pty",
     "undici",
     "web-push",
-    "@earendil-works/pi-coding-agent",
-    "@earendil-works/pi-agent-core",
-    "@earendil-works/pi-ai",
-    "@earendil-works/pi-tui",
   ],
   // Next 16 blocks cross-origin access to dev resources by default. Allow the
   // loopback and the RFC1918 LAN ranges so the dev server stays reachable
