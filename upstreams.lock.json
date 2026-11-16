@@ -16,10 +16,11 @@
       "remote": "upstream-pi-web",
       "url": "https://github.com/agegr/pi-web.git",
       "prefix": "projects/pi-web",
-      "ref": "v0.15.0",
-      "commit": "f130910abf662b506b2ef2f475fc21a2fe57badc",
+      "ref": "v0.17.0",
+      "commit": "174bff967807cdb59abb0204198d3d7cc19c862d",
       "snapshotCommits": [
-        "9015d10a49b0eca52fcfc5cd5c639ca25ab414f3"
+        "9015d10a49b0eca52fcfc5cd5c639ca25ab414f3",
+        "6dffeff9d41edc98727e0af44e704fa0f228bc65"
       ]
     }
   }
