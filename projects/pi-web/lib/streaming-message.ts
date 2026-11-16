@@ -151,12 +151,15 @@ export function streamReducer(
   }
 }
 
+// Bound expensive Markdown/layout updates, not the arrival or storage of tokens.
+export const STREAM_RENDER_INTERVAL_MS = 50;
+
 /**
- * The streaming state outside React: a chunk re-renders only the components
- * that subscribe to the part of it they show, not everything around the reply.
- * Listeners run synchronously in `dispatch`, so their state updates batch with
- * the ones the same event makes (message_end appends the reply and ends the
- * stream in one render).
+ * Streaming state is current immediately, but text/thinking/tool-input chunks
+ * notify React at most once per interval. A fixed trailing window (not a
+ * debounce) keeps continuous output moving without parsing Markdown per token.
+ * Structural events still notify synchronously: message_end appends the final
+ * reply and clears the stream in one render, cancelling any queued notification.
  */
 export interface StreamingStore {
   getState(): StreamingState;
@@ -167,18 +170,39 @@ export interface StreamingStore {
 export function createStreamingStore(): StreamingStore {
   let state = INITIAL_STREAMING_STATE;
   const listeners = new Set<() => void>();
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  const cancelPending = () => {
+    if (pending === undefined) return;
+    clearTimeout(pending);
+    pending = undefined;
+  };
+  const notify = () => {
+    cancelPending();
+    for (const listener of listeners) listener();
+  };
   return {
     getState: () => state,
     dispatch(action) {
       const next = streamReducer(state, action);
       if (next === state) return;
       state = next;
-      for (const listener of listeners) listener();
+      if (action.type === "delta" && (
+        action.event.type === "text_delta"
+        || action.event.type === "thinking_delta"
+        || action.event.type === "toolcall_delta"
+      )) {
+        if (pending === undefined && listeners.size > 0) {
+          pending = setTimeout(notify, STREAM_RENDER_INTERVAL_MS);
+        }
+      } else {
+        notify();
+      }
     },
     subscribe(listener) {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
+        if (listeners.size === 0) cancelPending();
       };
     },
   };

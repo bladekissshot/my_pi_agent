@@ -5,6 +5,7 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url);
 const {
   INITIAL_STREAMING_STATE,
+  STREAM_RENDER_INTERVAL_MS,
   createStreamingStore,
   streamReducer,
 } = await jiti.import("./streaming-message.ts");
@@ -231,7 +232,8 @@ test("normalizes tool calls in snapshots and clears on end", () => {
   assert.strictEqual(streamReducer(state, { type: "end" }), INITIAL_STREAMING_STATE);
 });
 
-test("the store notifies on a change only and stops after unsubscribe", () => {
+test("the store notifies on a change only and stops after unsubscribe", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const store = createStreamingStore();
   const seen = [];
   const unsubscribe = store.subscribe(() => seen.push(store.getState()));
@@ -241,11 +243,68 @@ test("the store notifies on a change only and stops after unsubscribe", () => {
   store.dispatch({ type: "start" });
   store.dispatch({ type: "snapshot", message: assistant([{ type: "text", text: "Hel" }]) });
   store.dispatch({ type: "delta", event: { type: "text_delta", contentIndex: 0, delta: "lo" } });
-  assert.equal(seen.length, 3);
+  assert.equal(seen.length, 2, "a text chunk does not force an immediate render");
   assert.equal(store.getState().streamingMessage.content[0].text, "Hello");
+  t.mock.timers.tick(STREAM_RENDER_INTERVAL_MS);
+  assert.equal(seen.length, 3);
 
   unsubscribe();
   store.dispatch({ type: "end" });
   assert.equal(seen.length, 3);
   assert.strictEqual(store.getState(), INITIAL_STREAMING_STATE);
+});
+
+for (const [kind, field] of [["text", "text"], ["thinking", "thinking"], ["toolcall", "rawInput"]]) {
+  test(`the store coalesces ${kind} deltas without losing chunks or starving a continuous stream`, (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const store = createStreamingStore();
+    store.dispatch({ type: "snapshot", message: assistant() });
+    store.dispatch({ type: "delta", event: { type: `${kind}_start`, contentIndex: 0, id: "tool-1", toolName: "write" } });
+    const seen = [];
+    store.subscribe(() => seen.push(store.getState().streamingMessage.content[0][field]));
+    for (let i = 0; i < 20; i++) {
+      store.dispatch({ type: "delta", event: { type: `${kind}_delta`, contentIndex: 0, delta: String(i % 10) } });
+      t.mock.timers.tick(STREAM_RENDER_INTERVAL_MS / 10);
+    }
+    assert.deepEqual(seen, ["0123456789", "01234567890123456789"]);
+    assert.equal(store.getState().streamingMessage.content[0][field], "01234567890123456789");
+    t.mock.timers.tick(STREAM_RENDER_INTERVAL_MS * 2);
+    assert.equal(seen.length, 2, "no polling after the last chunk");
+  });
+}
+
+test("authoritative block ends and stream replacement notify immediately and cancel queued renders", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = createStreamingStore();
+  store.dispatch({ type: "snapshot", message: assistant([{ type: "text", text: "" }]) });
+  const seen = [];
+  store.subscribe(() => seen.push(store.getState()));
+  const append = () => store.dispatch({ type: "delta", event: { type: "text_delta", contentIndex: 0, delta: "partial" } });
+  append();
+  store.dispatch({ type: "delta", event: { type: "text_end", contentIndex: 0, content: "authoritative" } });
+  assert.equal(seen.at(-1).streamingMessage.content[0].text, "authoritative");
+  append();
+  store.dispatch({ type: "snapshot", message: assistant([{ type: "text", text: "reconnected" }]) });
+  assert.equal(seen.at(-1).streamingMessage.content[0].text, "reconnected");
+  append();
+  store.dispatch({ type: "end" });
+  assert.strictEqual(seen.at(-1), INITIAL_STREAMING_STATE);
+  assert.equal(seen.length, 3);
+  t.mock.timers.tick(STREAM_RENDER_INTERVAL_MS * 2);
+  assert.equal(seen.length, 3, "a pending timer must not resurrect a finished stream");
+});
+
+test("unmount cancels a pending notification while a new subscriber reads the latest state", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = createStreamingStore();
+  store.dispatch({ type: "snapshot", message: assistant([{ type: "text", text: "" }]) });
+  let calls = 0;
+  const unsubscribe = store.subscribe(() => calls++);
+  store.dispatch({ type: "delta", event: { type: "text_delta", contentIndex: 0, delta: "kept" } });
+  unsubscribe();
+  const unsubscribeNext = store.subscribe(() => calls++);
+  assert.equal(store.getState().streamingMessage.content[0].text, "kept");
+  t.mock.timers.tick(STREAM_RENDER_INTERVAL_MS * 2);
+  assert.equal(calls, 0, "no stale queued work after unmount");
+  unsubscribeNext();
 });

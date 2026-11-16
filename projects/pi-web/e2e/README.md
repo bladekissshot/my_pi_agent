@@ -68,6 +68,28 @@ Coverage:
   collapse/expand draft preservation, countdown display, and server-side expiry.
 - The production assistant header keeps its height and numeric columns when streaming metrics appear, update and disappear. Static component renders cover digit boundaries with proportional and monospace fonts, without a live model. Run this check alone with `node e2e/streaming-metrics.mjs` (1280, 390 and 320px).
 
+## Streaming-rendering regression and CPU measurement
+
+Against an already running local production build (not a dev server), run:
+
+```powershell
+$env:E2E_BASE_URL = 'http://127.0.0.1:30142'
+$env:PLAYWRIGHT_CHANNEL = 'chrome' # optional: installed Chrome instead of Playwright Chromium
+node e2e/streaming-rendering.mjs
+```
+
+This opens an isolated browser context, intercepts every API request, and substitutes
+synthetic SSE. It does not read real sessions, create an agent, or call a model.
+The workload streams 240 table rows, checks that every row appears exactly once,
+checks a bounded number of DOM updates, tests tail following after a lone delayed
+chunk, preserves an upward-scrolled reading position, and completes while a delta
+is pending to catch ghost replies. `test-results/streaming-rendering/metrics.json`
+records DOM update counts and Chrome main-thread/script/layout durations. Pass
+`--measure-only` to record an older build without enforcing the coalescing budget;
+correctness assertions still apply. `E2E_PROFILE=1` also saves a CPU profile.
+Timing results describe this synthetic burst, not overall machine CPU or livestream
+smoothness. Run before/after measurements with the same browser and machine load.
+
 Model prompts, live model streaming, and agent execution are outside this suite.
 Failures save a screenshot, Playwright trace, and server log under
 `test-results/e2e/`; CI uploads that directory. Open a trace with
