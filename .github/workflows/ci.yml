@@ -21,3 +21,12 @@ jobs:
       - run: npm run build:pi
       - run: npm test
       - run: npm run check:web
+  windows-desktop-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --test scripts/start-pi-web.test.mjs
