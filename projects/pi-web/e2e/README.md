@@ -9,6 +9,9 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+Set `PLAYWRIGHT_CHANNEL=chrome` to use an installed Chrome instead of downloading
+Playwright Chromium; otherwise the default remains the bundled Chromium.
+
 The script starts and stops its own Turbopack dev server on an available
 loopback port. Run it in a checkout without an active dev server; Next.js
 shares `.next/dev/lock` within a checkout. All fixtures are created before

@@ -59,7 +59,9 @@ async function linkPiPackages() {
 const task = process.argv[2];
 switch (task) {
   case 'bootstrap':
-    for (const folder of ['projects/pi', ...consumers]) npm(['ci', '--ignore-scripts'], path.join(root, folder));
+    // An agent launched by `next start` inherits NODE_ENV=production. Builds
+    // still need the pinned compilers and test tools, never a global fallback.
+    for (const folder of ['projects/pi', ...consumers]) npm(['ci', '--ignore-scripts', '--include=dev'], path.join(root, folder));
     break;
   case 'build-pi':
     await seedModelData();
@@ -75,11 +77,11 @@ switch (task) {
   case 'test':
     for (const folder of ['plugins/prompt-manager', 'plugins/delegation']) npm(['test'], path.join(root, folder));
     npm(['run', 'test:integration'], path.join(root, 'plugins/delegation'));
-    run(process.execPath, ['--experimental-strip-types', '--test', 'lib/prompt-manager.test.mjs', 'lib/exact-system-prompt.test.mjs', 'lib/session-fork.test.mjs', 'lib/rpc-manager-tool-exposure.test.mjs', 'lib/default-cwd.test.mjs', 'lib/i18n/registry.test.mjs', 'lib/i18n/format.test.mjs'], path.join(root, 'projects/pi-web'));
+    run(process.execPath, ['--experimental-strip-types', '--test', 'lib/prompt-manager.test.mjs', 'lib/prompt-manager-runtime.integration.test.mjs', 'lib/exact-system-prompt.test.mjs', 'lib/session-fork.test.mjs', 'lib/rpc-manager-tool-exposure.test.mjs', 'lib/streaming-message.test.mjs', 'lib/local-runtime-build.test.mjs', 'lib/default-cwd.test.mjs', 'lib/i18n/registry.test.mjs', 'lib/i18n/format.test.mjs'], path.join(root, 'projects/pi-web'));
     break;
   case 'check-web':
     run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit'], path.join(root, 'projects/pi-web'));
-    run(process.execPath, ['node_modules/eslint/bin/eslint.js', 'components/SystemPromptPanel.tsx', 'components/AppShell.tsx', 'lib/prompt-manager.ts', 'lib/rpc-manager.ts', 'lib/default-cwd.ts', 'lib/allowed-roots.ts', 'app/api/prompts/route.ts', 'app/api/agent/new/route.ts'], path.join(root, 'projects/pi-web'));
+    run(process.execPath, ['node_modules/eslint/bin/eslint.js', 'components/SystemPromptPanel.tsx', 'components/AppShell.tsx', 'components/ChatWindow.tsx', 'hooks/useAgentSession.ts', 'next.config.ts', 'lib/prompt-manager.ts', 'lib/rpc-manager.ts', 'lib/default-cwd.ts', 'lib/allowed-roots.ts', 'app/api/prompts/route.ts', 'app/api/agent/new/route.ts'], path.join(root, 'projects/pi-web'));
     break;
   default: throw new Error('Use bootstrap, build-pi, build-web, test, check-web or link-pi.');
 }

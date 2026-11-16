@@ -7,7 +7,8 @@ const jiti = createJiti(import.meta.url, { jsx: { runtime: "automatic" }, tsconf
 const React = await jiti.import("react");
 const { renderToStaticMarkup } = await jiti.import("react-dom/server");
 const { AssistantMessageHeader } = await jiti.import("../components/MessageView.tsx");
-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
+// Match MessageView's alias so jiti shares one context on Windows too.
+const { I18nProvider } = await jiti.import("@/hooks/useI18n");
 
 export async function checkStreamingMetrics(page) {
   const states = [
@@ -68,7 +69,7 @@ export async function checkStreamingMetrics(page) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || undefined });
   try {
     for (const width of [1280, 390, 320]) {
       const page = await browser.newPage({ viewport: { width, height: 800 } });

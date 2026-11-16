@@ -29,7 +29,7 @@ try {
     let json = {};
     if (p === '/api/sessions') json = { sessions: [row], version: 1 };
     else if (p === '/api/sessions/ui-state') json = { version: 1, revision: 1, sessions: {}, projects: {}, projectOrder: [cwd] };
-    else if (p === '/api/agent/running') json = { runningSessionIds: active ? [id] : [], awaitingInputSessionIds: [], version: 1, sessionUiStateRevision: 1 };
+    else if (p === '/api/agent/running') json = { runningSessionIds: active ? [id] : [], awaitingInputSessionIds: [], completionNotificationSuppressedSessionIds: [], subagentsActiveSessionIds: [], sessionListVersion: 1, sessionUiStateRevision: 1, serverNow: Date.now() };
     else if (p === `/api/sessions/${id}`) json = { session: row, header: { ...row, type: 'session', version: 3 }, tree: [], leafId: 'user1', context: { messages, entryIds: messages.map((_, i) => `entry${i}`), oldestEntryId: 'entry0', hasMore: false, turnsBefore: 0, thinkingLevel: 'off', model: null }, stats: { userMessages: 1, assistantMessages: 0, toolCalls: 0, toolResults: 0, totalMessages: 1, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }, totalActiveMs: 0 };
     else if (p === `/api/sessions/${id}/state` || p === `/api/agent/${id}`) json = { running: active, state: { isStreaming: active, isPromptRunning: active, messages: [], model: null, thinkingLevel: 'off' } };
     else if (p.endsWith('/lease')) json = { running: active, awaitingInput: false, subagentsActive: false };

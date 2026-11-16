@@ -92,7 +92,7 @@ pi-delegation/t-xxxxxxxx
 
 ## 安装、迁移、卸载
 
-需要 Node.js >=22.19、Git、Pi Agent >=1.5.0。已验证 Pi Web `@agegr/pi-web@0.15.0`。目标机器自行配置 Pi 模型和密钥。
+需要 Node.js >=22.19、Git、Pi Agent >=1.5.0。本仓库的开发验证基线为 Pi Agent 1.5.2 / Pi Web `@agegr/pi-web@0.17.0`，此前也验证过 1.5.0 / 0.15.0。目标机器自行配置 Pi 模型和密钥。
 
 把发行压缩包解压到长期保留的目录，再安装该目录；macOS/Linux 示例：
 

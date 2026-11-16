@@ -8,7 +8,7 @@
 - `scripts/`: upstream synchronization, verification and local build orchestration.
 - `upstreams.lock.json`: reviewed upstream versions and commits.
 
-初始版本：Pi 1.5.0、Pi Web 0.15.0。当前本地修改见 [docs/local-changes.md](docs/local-changes.md)。完整上游版本、commit 和子树快照记录在 `upstreams.lock.json`。
+当前上游基线：Pi 1.5.2、Pi Web 0.17.0（最初导入为 Pi 1.5.0、Pi Web 0.15.0）。当前本地修改见 [docs/local-changes.md](docs/local-changes.md)。完整上游版本、commit 和子树快照记录在 `upstreams.lock.json`。本次升级的适配、验证及运行注意事项见 [docs/upstream-2026-11.md](docs/upstream-2026-11.md)。
 
 ## 构建和验证
 
@@ -22,15 +22,15 @@ npm run check:web
 npm run build:web
 ```
 
-两个上游保留各自的构建布局和锁文件。`build:pi` 构建本仓库的 Pi，并把 Web 和插件的 SDK 解析指向这套本地包，避免 CLI 与 Web 使用不同的 Pi。普通测试使用隔离目录和模拟服务，不会调用你的模型网关。
+两个上游保留各自的构建布局和锁文件。`bootstrap` 显式安装开发依赖，即使从 Pi Web 的生产进程启动也会使用锁定的编译器与测试工具。`build:pi` 构建本仓库的 Pi，并把 Web 和插件的 SDK 解析指向这套本地包，避免 CLI 与 Web 使用不同的 Pi。普通测试使用隔离目录和模拟服务，不会调用你的模型网关。
 
 首次构建的模型数据取自相同版本的公开 Pi npm 包，再由上游校验器检查，避免构建时必须获取实时模型目录。需要更新目录时可按 Pi 上游的生成流程显式更新。
 
 ## 分别同步上游
 
 ```sh
-npm run sync:pi -- v1.5.0
-npm run sync:pi-web -- v0.15.0
+npm run sync:pi -- v1.5.2
+npm run sync:pi-web -- v0.17.0
 ```
 
 示例中的 tag 换成要同步的版本。脚本要求工作区干净，会补齐对应 remote、创建 `codex/sync-*` 分支、合并一个子树并更新版本记录。已在当前版本则不创建分支。冲突保留供你解决，脚本不会自动合并到 main 或推送。同步后运行相关检查，再集成该分支。

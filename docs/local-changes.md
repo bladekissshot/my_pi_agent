@@ -7,7 +7,9 @@
 - Delegation plugin: current optional two-model workflow, immutable specs, isolated worktrees, repository initialization dialog, validation and main-model acceptance, including local uncommitted changes at import time.
 - Streaming rendering: coalesce text, thinking and tool-input UI notifications in 50ms windows without dropping content; complete and reconnect synchronously. Follow scrolling after the rendered batch commits. Unit tests and a model-free browser benchmark cover burst rendering, paused output, reading position and completion.
 - Linked SDK builds: explicitly preserve native ESM imports for the configured local Pi runtimes and their subpath exports on the server; Next's node_modules-path external detection otherwise bundles monorepo junction targets and breaks SDK dynamic imports. Browser helpers remain bundled.
-- Pi source: the complete reviewed v1.5.0 upstream toolkit, with no direct local core edits at this import.
+- Upstream refresh: Pi Web v0.17.0 with Pi v1.5.2; prompt-manager and delegation development dependencies use the same SDK. Session startup keeps the upstream project-trust gate and llama.cpp provider alongside immutable prompt binding. A real-SDK regression covers startup dialogs and restoring a session after template edits.
+- Reproducible bootstrap: explicitly install development dependencies even under an inherited production environment, so the pinned TypeScript compiler is used instead of a global fallback.
+- Pi source: the complete reviewed v1.5.2 upstream toolkit, with no direct local core edits.
 
 Runtime settings, authentication, provider catalogs, API endpoints, session transcripts, prompt catalogs and bound snapshots are not migrated into Git. The example provider configuration uses a non-routable placeholder host and an environment-variable reference.
 
