@@ -6,10 +6,11 @@
       "remote": "upstream-pi",
       "url": "https://github.com/earendil-works/pi.git",
       "prefix": "projects/pi",
-      "ref": "v1.5.0",
-      "commit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+      "ref": "v1.5.2",
+      "commit": "b4afdddf44e059c67ccf5097e5317d913521b470",
       "snapshotCommits": [
-        "7d44d5554b48b839f17bc7de805a0e5466792b06"
+        "7d44d5554b48b839f17bc7de805a0e5466792b06",
+        "b50176f4f1ab34b7c003cd0fdca2b5f3edca348f"
       ]
     },
     "pi-web": {
