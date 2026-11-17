@@ -6,7 +6,12 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +26,33 @@ jobs:
       - run: npm run build:pi
       - run: npm test
       - run: npm run check:web
+      - name: JSON response regression tests
+        working-directory: projects/pi-web
+        run: node --experimental-strip-types --test lib/json-response.test.mjs
+      - name: Worktree path compatibility
+        working-directory: projects/pi-web
+        run: node --experimental-strip-types --test --test-name-pattern="main and linked|Windows short-path" lib/worktree.test.mjs
+      - run: npm run build:web
+      - name: Install browser for production E2E
+        if: runner.os != 'Windows'
+        working-directory: projects/pi-web
+        run: npx playwright install --with-deps chromium
+      - name: Production browser and HTTP compression regression
+        working-directory: projects/pi-web
+        env:
+          E2E_SERVER_MODE: start
+          PI_OFFLINE: '1'
+          # Windows runners include Chrome; avoid reinstalling Windows media
+          # features with Playwright --with-deps for an already usable browser.
+          PLAYWRIGHT_CHANNEL: ${{ runner.os == 'Windows' && 'chrome' || '' }}
+        run: npm run test:e2e
+      - name: Keep failing browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-web-e2e-${{ matrix.os }}
+          path: projects/pi-web/test-results/e2e
+          if-no-files-found: ignore
   windows-desktop-launcher:
     runs-on: windows-latest
     timeout-minutes: 5

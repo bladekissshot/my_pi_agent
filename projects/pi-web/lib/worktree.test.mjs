@@ -23,7 +23,7 @@ test("main and linked worktrees share one canonical project root", async (t) => 
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
 
   const repo = path.join(tempRoot, "repo");
-  const linked = path.join(tempRoot, "linked");
+  const linked = path.join(tempRoot, "linked #1 & 中文");
   await execFileAsync("git", ["init", repo]);
   await git(repo, ["config", "user.name", "Pi Web Test"]);
   await git(repo, ["config", "user.email", "pi-web-test@example.invalid"]);
@@ -48,6 +48,24 @@ test("main and linked worktrees share one canonical project root", async (t) => 
   const listedLinked = worktrees.find((worktree) => worktree.branch === "feature/test");
   assert.ok(listedLinked);
   assert.equal(findCurrentWorktreePath(worktrees, `${linked}${path.sep}`), listedLinked.path);
+});
+
+test("Windows short-path worktrees keep their project and current checkout", { skip: process.platform !== "win32" }, async (t) => {
+  const { repo, linked } = await linkedWorktree(t, "pi-web-short-path-");
+  const { stdout } = await execFileAsync(process.env.ComSpec || "cmd.exe", [
+    "/d", "/s", "/c", 'for %I in ("%PI_WORKTREE_TEST_PATH%") do @echo %~sI',
+  ], { env: { ...process.env, PI_WORKTREE_TEST_PATH: linked }, windowsVerbatimArguments: true });
+  const shortPath = stdout.trim();
+  assert.ok(shortPath);
+  const { resolveProject, listWorktrees, findCurrentWorktreePath } = await loadSubject();
+  const info = await resolveProject(shortPath);
+  const context = JSON.stringify({ shortPath, nativePath: realpathSync.native(linked), info });
+  assert.equal(info.isTopLevel, true, context);
+  assert.equal(info.isWorktree, true, context);
+  assert.equal(realpathSync.native(info.projectRoot), realpathSync.native(repo));
+  const current = findCurrentWorktreePath(await listWorktrees(repo), shortPath);
+  assert.ok(current, "the short path selects the registered checkout");
+  assert.equal(realpathSync.native(current), realpathSync.native(linked));
 });
 
 test("a removed worktree resolves back to the repo it branched from", async (t) => {

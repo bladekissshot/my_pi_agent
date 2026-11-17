@@ -17,9 +17,10 @@ export function createDirectoryPickerFixtures(agentDir) {
   symlinkSync(alpha, join(root, "alpha-link"), "junction");
   return {
     root,
-    // As the browse route lists them: what Select picks, however it was typed.
-    alpha: realpathSync(alpha),
-    beta: realpathSync(beta),
+    // fs.promises.realpath in the browse route uses the native implementation;
+    // the synchronous JS version can retain Windows 8.3 names such as RUNNER~1.
+    alpha: realpathSync.native(alpha),
+    beta: realpathSync.native(beta),
     // A `..`, a link and a trailing slash (and on macOS a linked temp dir).
     typedAlpha: [root, "beta", "..", "alpha-link", ""].join(sep),
   };
