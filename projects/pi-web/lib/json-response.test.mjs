@@ -8,24 +8,27 @@ const jiti = createJiti(import.meta.url, {
 });
 const { jsonResponse } = await jiti.import("./json-response.ts");
 
-test("does not gzip a large JSON response when the client disables gzip", async () => {
+test("leaves large JSON unencoded for Next's HTTP compression", async () => {
   const response = jsonResponse(
-    new Request("http://localhost/test", { headers: { "Accept-Encoding": "gzip;q=0, br" } }),
+    new Request("http://localhost/test", { headers: { "Accept-Encoding": "gzip" } }),
     { value: "large payload ".repeat(200) },
   );
 
   assert.equal(response.headers.get("Content-Encoding"), null);
-  assert.match(response.headers.get("Vary") ?? "", /(?:^|,\s*)Accept-Encoding(?:\s*,|$)/i);
   assert.equal((await response.json()).value, "large payload ".repeat(200));
 });
 
-test("does not gzip when the gzip quality value is invalid", async () => {
+test("preserves response status and application headers", async () => {
   const response = jsonResponse(
     new Request("http://localhost/test", { headers: { "Accept-Encoding": "gzip;q=invalid, *;q=1" } }),
     { value: "large payload ".repeat(200) },
+    { status: 202, headers: { Vary: "Origin", "Cache-Control": "private, no-cache" } },
   );
 
   assert.equal(response.headers.get("Content-Encoding"), null);
+  assert.equal(response.status, 202);
+  assert.equal(response.headers.get("Vary"), "Origin");
+  assert.equal(response.headers.get("Cache-Control"), "private, no-cache");
   assert.equal((await response.json()).value, "large payload ".repeat(200));
 });
 

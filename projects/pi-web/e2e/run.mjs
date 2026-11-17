@@ -209,6 +209,17 @@ try {
   assert.equal(detail.context.messages.length, 50);
   assert.equal(detail.context.hasMore, true);
   assert.ok(JSON.stringify(detail).length < 100_000, "Detail transferred unbounded history");
+  // Next 16.4.5 strips route Content-Encoding: manually gzipping here used to
+  // produce a double-encoded response. Exercise the real HTTP server boundary.
+  for (const encoding of ["gzip", "identity"]) {
+    const response = await fetch(`${base}/api/sessions/${LONG}?deferThinking=1&deferMedia=1`, {
+      headers: { "Accept-Encoding": encoding },
+      signal: AbortSignal.timeout(30_000),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Encoding"), encoding === "gzip" ? "gzip" : null);
+    assert.deepEqual((await response.json()).context.entryIds, detail.context.entryIds);
+  }
   const tail = await api(`/api/sessions/${LONG}/context?tail=50`);
   assert.deepEqual(tail.context.entryIds, ids(4950, 5000));
   assert.equal(tail.context.messages.length, 50);

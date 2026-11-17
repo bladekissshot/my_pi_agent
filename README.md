@@ -46,6 +46,8 @@ npm run launch:web
 
 Web 只监听 loopback；若端口已有服务会拒绝重复启动。需要先完成对应构建。插件也可从 `plugins/` 子目录独立安装；`plugins/prompt-manager/presets/general.md` 是可选的通用提示词源码。
 
+macOS 本地升级、全局命令链接及桌面入口配置见 [macOS 本地安装说明](docs/macos-local-install.md)。
+
 已有 Windows 本地安装可使用优化后的[桌面启动器](docs/windows-desktop-launcher.md)：`scripts/Start-PiWeb.ps1`。它复用安装目录的环境和服务入口，省去启动前无监听端口上的 HTTP 超时等待，并保留服务复用、并发启动锁及端口冲突保护；不替代上述源码构建启动流程。
 
 ## 提交检查
