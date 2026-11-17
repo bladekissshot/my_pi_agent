@@ -50,9 +50,11 @@ test("a pinned prompt survives startup dialogs and resume without trusting proje
       });
       unsubscribe();
       assert.equal(dialogs.length, 1, "the wrapper must be available while its startup dialog waits");
+      assert.equal(session.hasLocalRestartBlocker(), true, "a startup dialog must prevent application restart even without a running prompt");
       assert.equal((await session.send({ type: "get_state" })).systemPrompt, "PINNED ORIGINAL PROMPT");
       await session.send({ type: "extension_ui_response", id: dialogs[0].id, confirmed: true });
       await session.waitUntilReady();
+      assert.equal(session.hasLocalRestartBlocker(), false, "the startup blocker clears after the answer");
       assert.equal(session.inner.settingsManager.isProjectTrusted(), false);
       assert.equal(session.inner.settingsManager.getDefaultProvider(), "fixture");
       assert.equal((await session.send({ type: "get_state" })).systemPrompt, "PINNED ORIGINAL PROMPT");

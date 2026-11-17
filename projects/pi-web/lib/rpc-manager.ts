@@ -27,6 +27,7 @@ import { computeLiveSessionTotalActiveMs } from "./session-timing";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { assertLocalRefreshAdmission } from "./local-refresh";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -1313,8 +1314,15 @@ export class AgentSessionWrapper {
     }
   }
 
+  /** Restart must not cancel startup dialogs, pending commands or disposal. */
+  hasLocalRestartBlocker(): boolean {
+    return this.activeMutatingCommands > 0 || this.hasBlockingUiRequest() || this.closing
+      || Boolean(this.extensionBindingPromise && !this.extensionsBound);
+  }
+
   async send(command: Record<string, unknown>): Promise<unknown> {
     const type = command.type as string;
+    if (!["get_state", "get_tools", "abort", "abort_bash", "extension_ui_response"].includes(type)) assertLocalRefreshAdmission();
     // A status read (the chat's reconciliation, every few seconds while it runs) would hide the
     // last command that did something; it never resets the idle timer either.
     if (type !== "get_state") {
@@ -3442,6 +3450,7 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
+  assertLocalRefreshAdmission();
   const { initialModel, allowInitialModelFallback, thinkingLevel } = options;
   const requestedToolNames = options.toolNames === undefined
     ? undefined

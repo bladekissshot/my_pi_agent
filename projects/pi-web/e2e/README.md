@@ -76,6 +76,16 @@ Coverage:
   inserts at the caret.
 - The production assistant header keeps its height and numeric columns when streaming metrics appear, update and disappear. Static component renders cover digit boundaries with proportional and monospace fonts, without a live model. Run this check alone with `node e2e/streaming-metrics.mjs` (1280, 390 and 320px).
 
+## Local refresh (downstream monorepo)
+
+After an isolated production build, `node e2e/local-refresh.mjs` starts its own
+managed fixture on a temporary port, clicks Settings › Application, and verifies
+isolated checks, the restarted instance, automatic navigation and helper PID exit.
+It never uses the real installation's configuration or prompts a model.
+`PLAYWRIGHT_CHANNEL=chrome` selects installed Chrome; otherwise Playwright Chromium
+is used. This test needs the monorepo's `scripts/pi-web-runtime.cjs` and is not part
+of upstream's standalone checkout. See the root `docs/local-refresh.md`.
+
 ## Streaming-rendering regression and CPU measurement
 
 Against an already running local production build (not a dev server), run:

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { assertLocalRefreshAdmission } from "./local-refresh";
 import { homedir } from "os";
 import type { IPty } from "node-pty";
 import { getPowerShellConfig } from "@earendil-works/pi-coding-agent";
@@ -54,7 +55,7 @@ function shellEnvironment(): Record<string, string> {
   for (const [key, value] of Object.entries(process.env)) {
     // The browser login password guards this server, not the shells it starts.
     const comparableKey = process.platform === "win32" ? key.toUpperCase() : key;
-    if (value !== undefined && comparableKey !== "PI_WEB_PASSWORD") env[key] = value;
+    if (value !== undefined && !["PI_WEB_PASSWORD", "PI_WEB_LOCAL_REFRESH_TOKEN", "PI_WEB_LOCAL_REFRESH_CONFIG"].includes(comparableKey)) env[key] = value;
   }
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
@@ -93,6 +94,7 @@ function dimension(value: number, fallback: number): number {
 }
 
 export function createTerminal(cwd: string, cols: number, rows: number, id: string = randomUUID()): string {
+  assertLocalRefreshAdmission();
   const existing = registry().get(id);
   if (existing) {
     if (!samePath(existing.cwd, cwd)) throw new Error("Terminal belongs to a different workspace");

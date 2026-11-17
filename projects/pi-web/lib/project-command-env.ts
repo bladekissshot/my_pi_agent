@@ -42,7 +42,9 @@ function isHostRuntimeVariable(name: string, platform: NodeJS.Platform): boolean
     || comparableName.startsWith("NEXT_")
     // The browser login password guards this server; commands run on behalf of
     // a project (and the model reading their output) have no use for it.
-    || comparableName === "PI_WEB_PASSWORD";
+    || comparableName === "PI_WEB_PASSWORD"
+    || comparableName === "PI_WEB_LOCAL_REFRESH_TOKEN"
+    || comparableName === "PI_WEB_LOCAL_REFRESH_CONFIG";
 }
 
 export function sanitizeProjectCommandEnvironment(

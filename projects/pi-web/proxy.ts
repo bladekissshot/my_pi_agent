@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { assertLocalRefreshAdmission } from "@/lib/local-refresh";
 import {
   getAuthRetryAfterMs,
   recordAuthFailure,
@@ -37,6 +38,11 @@ export function proxy(request: NextRequest) {
       return new NextResponse("Untrusted request", { status: 403 });
     }
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
+
+  if (isApiRequest && !["GET", "HEAD"].includes(request.method) && request.nextUrl.pathname !== "/api/local-refresh") {
+    try { assertLocalRefreshAdmission(); }
+    catch { return NextResponse.json({ error: "Pi Web is restarting" }, { status: 503 }); }
   }
 
   const password = process.env.PI_WEB_PASSWORD;
