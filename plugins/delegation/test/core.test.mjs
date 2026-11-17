@@ -41,13 +41,23 @@ test('disabled mode cannot submit; queue cancellation leaves active work running
 });
 test('concurrency cap, independent check, review gate and accepted dependencies',async t=>{
   let active=0,peak=0;
-  const c=await fixture(t,async j=>{peak=Math.max(peak,++active);await new Promise(r=>setTimeout(r,100));fs.writeFileSync(path.join(j.cwd,'hello.txt'),'hello');active--;return submitted;},{maxConcurrent:2});
-  const a=c.submit(spec()),b=c.submit(spec()),dep=c.submit(spec({dependencies:[a.id]}));
-  assert.equal(dep.status,'waiting');assert.throws(()=>c.review(a.id,'accept','Evidence of an unvalidated result'),/validated/);
-  await done(c,a.id);await done(c,b.id);assert.equal(peak,2);assert.equal(dep.status,'waiting');
-  assert.equal(a.validation[0].code,0);c.review(a.id,'accept','Reviewed fixture diff and verified exact output with the acceptance command.');
-  await done(c,dep.id);assert.equal(dep.status,'review');assert.equal(a.status,'accepted');
-  assert.equal(fs.readFileSync(path.join(c.cwd,'hello.txt'),'utf8'),'before\n','parent checkout untouched');
+  // Worktree setup can take over 100ms on Windows. Keep the first worker alive
+  // until both workers enter, rather than relying on two sleeps overlapping.
+  const gate=Promise.withResolvers();
+  const c=await fixture(t,async j=>{
+    peak=Math.max(peak,++active);
+    if(active===2)gate.resolve();
+    await gate.promise;
+    fs.writeFileSync(path.join(j.cwd,'hello.txt'),'hello');active--;return submitted;
+  },{maxConcurrent:2});
+  try{
+    const a=c.submit(spec()),b=c.submit(spec()),dep=c.submit(spec({dependencies:[a.id]}));
+    assert.equal(dep.status,'waiting');assert.throws(()=>c.review(a.id,'accept','Evidence of an unvalidated result'),/validated/);
+    await done(c,a.id);await done(c,b.id);assert.equal(peak,2);assert.equal(dep.status,'waiting');
+    assert.equal(a.validation[0].code,0);c.review(a.id,'accept','Reviewed fixture diff and verified exact output with the acceptance command.');
+    await done(c,dep.id);assert.equal(dep.status,'review');assert.equal(a.status,'accepted');
+    assert.equal(fs.readFileSync(path.join(c.cwd,'hello.txt'),'utf8'),'before\n','parent checkout untouched');
+  }finally{gate.resolve();}
 });
 test('out-of-scope writes and failed validation become blocked',async t=>{
   const c=await fixture(t,async j=>{fs.writeFileSync(path.join(j.cwd,'other.txt'),'oops');return submitted;});
