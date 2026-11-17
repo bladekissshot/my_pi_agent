@@ -11,6 +11,7 @@
 - Reproducible bootstrap: explicitly install development dependencies even under an inherited production environment, so the pinned TypeScript compiler is used instead of a global fallback.
 - Pi source: the complete reviewed v1.5.2 upstream toolkit, with no direct local core edits.
 - macOS deployment: verified Darwin ARM64 native modules, zsh terminal startup and source-linked CLI/Web installation. The optional desktop launcher source lives under `scripts/macos/`; Windows keeps its PowerShell launcher. Pi Web pins Next.js 16.4.6, including the 16.4.5 security fixes and automatic route compression; JSON routes leave compression to Next's HTTP server because the patched runtime strips route-level Content-Encoding. Windows and Linux CI build both projects and run production E2E, including gzip and identity responses for long sessions. See [macOS setup](macos-local-install.md).
+- Windows worktree identity: reconcile Git's expanded path with Windows 8.3 aliases when detecting checkout roots and selecting the current worktree, with native Windows regression coverage and Unicode path fixtures.
 
 Runtime settings, authentication, provider catalogs, API endpoints, session transcripts, prompt catalogs and bound snapshots are not migrated into Git. The example provider configuration uses a non-routable placeholder host and an environment-variable reference.
 

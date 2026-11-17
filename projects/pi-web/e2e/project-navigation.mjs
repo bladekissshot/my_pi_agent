@@ -41,7 +41,7 @@ export async function checkProjectNavigation({ browser, base, artifacts, fixture
   const current = initialSessions.find((session) => session.id === fixture.id);
   const other = initialSessions.find((session) => session.id === otherSessionId);
   assert.ok(current?.projectKey && other?.projectKey, "both projects have their server identity");
-  assert.equal(current.projectRoot, fixture.root, "the linked worktree belongs to its main project");
+  assert.equal(realpathSync.native(current.projectRoot), realpathSync.native(fixture.root), "the linked worktree belongs to its main project");
   const empty = await post("/api/cwd/validate", { cwd: fixture.empty });
   const pin = { action: "pin-project", projectKey: empty.projectKey, root: empty.projectRoot };
   await post("/api/sessions/ui-state", { ...pin, pinned: true });

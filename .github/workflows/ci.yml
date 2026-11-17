@@ -29,6 +29,9 @@ jobs:
       - name: JSON response regression tests
         working-directory: projects/pi-web
         run: node --experimental-strip-types --test lib/json-response.test.mjs
+      - name: Worktree path compatibility
+        working-directory: projects/pi-web
+        run: node --experimental-strip-types --test --test-name-pattern="main and linked|Windows short-path" lib/worktree.test.mjs
       - run: npm run build:web
       - name: Install browser for production E2E
         working-directory: projects/pi-web

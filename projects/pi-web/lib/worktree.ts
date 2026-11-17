@@ -91,6 +91,17 @@ function realPathOrSelf(filePath: string): string {
   }
 }
 
+/** Git may expand Windows 8.3 names that Node's lexical realpath preserves. */
+function sameExistingPath(a: string, b: string): boolean {
+  if (samePath(a, b)) return true;
+  if (process.platform !== "win32") return false;
+  try {
+    return samePath(realpathSync.native(a), realpathSync.native(b));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The folder a repository's worktrees group under, from its common git dir.
  * A checkout's `.git` stands in that folder, and so does a bare repo that a
@@ -217,7 +228,7 @@ async function resolveProjectUncached(cwd: string): Promise<ProjectInfo> {
     // are created for existing users. samePath, never `===`: git prints POSIX
     // paths on Windows, where raw equality is always false and hides the
     // worktree switcher.
-    const isTopLevel = samePath(toplevel, realCwd);
+    const isTopLevel = sameExistingPath(toplevel, realCwd);
     const isWorktreeTopLevel = !samePath(gitDir, commonDir) && isTopLevel;
     const topLevelProjectRoot = isWorktreeTopLevel ? repoRootFromCommonDir(commonDir) : toplevel;
     info = {
@@ -293,7 +304,7 @@ export async function listWorktrees(cwd: string): Promise<WorktreeInfo[]> {
 }
 
 function findWorktreeByPath(worktrees: readonly WorktreeInfo[], candidate: string): WorktreeInfo | undefined {
-  return worktrees.find((worktree) => samePath(worktree.path, candidate));
+  return worktrees.find((worktree) => sameExistingPath(worktree.path, candidate));
 }
 
 export function findCurrentWorktreePath(worktrees: readonly WorktreeInfo[], cwd: string): string | null {
