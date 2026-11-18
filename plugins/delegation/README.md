@@ -1,4 +1,4 @@
-# pi_agent_delegation_plugin
+# Pi Delegation
 
 Pi Delegation 0.1.0 · Pi Agent / Pi Web 扩展源码与维护仓库
 
@@ -6,7 +6,7 @@ Pi Delegation 0.1.0 · Pi Agent / Pi Web 扩展源码与维护仓库
 
 ## 仓库与维护
 
-本仓库包含委派插件、[主会话 Header 扩展](integrations/pi-agent/README.md)、[Pi Web 的 Mac 启动入口源码](integrations/pi-web/README.md)，以及[配置示例](examples/models.example.json)和[详细 spec 示例](docs/spec-example.md)。上游 Pi Agent/Pi Web 本体未修改。开发、CI、升级流程见[维护说明](docs/MAINTAINING.md)。
+委派插件的维护位置是 [`bladekissshot/my_pi_agent` 的 `plugins/delegation`](https://github.com/bladekissshot/my_pi_agent/tree/main/plugins/delegation)。旧独立仓库不再维护。本目录包含委派插件、[主会话 Header 扩展](integrations/pi-agent/README.md)、[Pi Web 的 Mac 启动入口源码](integrations/pi-web/README.md)，以及[配置示例](examples/models.example.json)和[详细 spec 示例](docs/spec-example.md)。上游 Pi Agent/Pi Web 本体未修改。开发、CI、升级流程见[维护说明](docs/MAINTAINING.md)。
 
 ```sh
 pi install ./plugins/delegation
@@ -37,7 +37,7 @@ pi install ./plugins/delegation
 
 主模型负责理解目标、检查仓库、确定接口、规划、详细 spec、复杂调试、集成与验收。执行模型根据 spec 实现代码或做只读调查；这两类任务共用同一个执行模型，没有第三种模型配置，也不允许递归委派。
 
-AUTO 下，主模型初步摸清边界后，默认尽早派出能独立验收、可并行推进的实现、只读调查或审查，并继续推进自己的工作。只有一个合适的子任务也可以分派；小任务、高耦合任务或分派成本高于收益时可以不派。并发上限只是护栏，每个父会话独立计数。
+AUTO 下，主模型初步摸清边界后，默认尽早派出能独立验收、可并行推进的实现、只读调查或审查，并继续推进自己的工作。只有一个合适的子任务也可以分派；小任务、高耦合任务或分派成本高于收益时可以不派。大型项目和跨模块修改应优先寻找这种分工，但是否委派由主模型决定。执行模型会收到自己的任务 ID、模型、任务类型和父会话标识，对主模型交付，不负责全局验收。并发上限只是护栏，每个父会话独立计数。
 
 工具：
 
@@ -46,7 +46,27 @@ AUTO 下，主模型初步摸清边界后，默认尽早派出能独立验收、
 | `delegate_task` | 校验并固化 spec，创建任务，立即返回；可连续派发独立任务 |
 | `delegate_status` | 读取任务、工作树、执行报告、真实检查输出与统计；`wait: true` 最多等 30 秒 |
 | `delegate_review` | 主模型提供具体审查/集成证据后验收，或标记阻塞 |
+| `delegate_steer` | 仅主模型控制本会话子任务：指导、取阶段报告、停止，或在读过报告后继续 |
 | `worker_report` | 仅执行会话拥有；只能提交待审查结果或报告阻塞 |
+| `team_board` | 主模型和执行模型共享；读取主项目白板，或追加一条带身份的协作记录 |
+
+## 项目白板 `TeamBoard.MD`
+
+开启 AUTO 后无需另配参数。第一次 `team_board` 发帖时在**父会话所在 Git 工作树的根目录**创建白板。所有子任务（包括只读调查）都通过同一工具读写这一份文件，不修改自己的 worktree 副本，也不用把白板加入 spec 的 `allowedPaths`。不开启、仅查询或不使用白板，不会创建该文件。
+
+- 主模型在派工前写 `goal`（目标与验收条件），变更时追加新版；子模型接手时看全局，再写 `update` 说明自己负责哪块。阻塞用 `block`。不要求逐轮汇报。
+- 跨任务接口有疑问时，用 `ask` 点名 `main` 或任务 ID。对方在交接或使用该接口前读取，核对实际证据后用 `confirm` 回复；有分歧就写明，不用为了回复而等待或唤醒所有人。白板没有即时推送。
+- `team_board` 的 `read` 默认返回最近 16 个非空行，以及本主会话最近的目标；用返回的 `before` 向前翻页。`post` 自动写时间和作者，正文为一行，最多 600 字符。例如 `{"action":"post","kind":"confirm","text":"答 t-1a2b3c4d：已核对 api.ts，取消后不会再次入队。"}`。
+- 同一项目的其他主会话也能看到白板，依主会话 ID / 任务 ID 区分来源。只保存适合团队共享的摘要和证据位置，不写密钥或完整日志。用新记录更正旧记录；agent 不用普通文件工具或 shell 覆盖白板。工具通过项目内短时互斥锁串行访问；异常退出若留下 `.TeamBoard.MD.lock`，确认没有写入者后才手动移除该空目录。
+- 白板是协作笔记，不是任务状态机，也不能修改 spec 或授予权限；`worker_report`、`delegate_status`、`delegate_review` 依然负责正式提交、状态与验收。
+
+## 主 → 子指导与硬超时
+
+建议优先委派能在 30 分钟以内独立交付和验证的小任务。`delegate_steer` 的 `guide` 将纠正或下一步建议投递到指定 worker 的下一次模型轮次，不打断已经执行的工具；需要中止当前工作用 `stop`。`summary` 主动暂停并取一次阶段报告。子模型没有 steer 工具，也不能指挥其他子模型。指导不能改 spec 或免除验收。
+
+每段实际执行（不含排队等待）**最长 30 分钟**，与插件验收阶段的超时独立。未交付时 runtime 中止普通工作，只允许向执行模型发一次无工具的总结请求；最多等 30 秒，模型不可用则发送明确标为 `runtime` 的进度快照，不冒充子模型答复。报告在主会话显示，可用 `delegate_status` 重读。任务停在 `paused`，不因普通消息、查询、重载或等待而继续。
+
+主模型读报告后，带报告中的 `checkpointId` 调 `stop`，或调 `continue` 并写明一个可验收的短下一步。在同一任务和工作树继续，已有子会话记录可用时恢复原上下文，重新计时；每次续跑都受同样上限约束。人工 `/delegation stop` 始终可以取消，不需要等报告。暂停/停止请求不能回滚已经产生的文件修改，也不是针对脱离宿主的外部进程的操作系统级沙箱。
 
 ## Spec 和执行约束
 
@@ -82,7 +102,7 @@ pi-delegation/t-xxxxxxxx
 
 - 用量读取 Pi assistant 消息返回的 usage；流式响应结束后结算，不猜测实时 token 或费用。主会话统计包含其已有消息；模型切换后按实际模型分别保留记录。未被提供方返回的计费、父会话压缩等额外请求不在统计内。
 - 执行时间包含模型、工具和独立验证；阻塞、排队、等待验收时停止计时。多个并行任务的累计执行时间不等于墙钟时间。主会话计时从插件加载后开始。
-- 执行会话禁用自动压缩与 agent 自动重试，不限制模型轮次。worker 从开始执行起满 30 分钟仍未交付时，只发一次 Pi steer，要求立即提交当前结论、证据、卡点和下一步，然后退出。交接只允许提交报告；若 60 秒内没有交回报告，就中止并保留会话记录和工作树。已有报告立即结束执行，无额外“收尾”模型调用。
+- 执行会话禁用自动压缩与 agent 自动重试，不限制模型轮次。30 分钟仍未交付时进入上述强制报告检查点；提交正式报告后则直接结束本段执行，无额外“收尾”调用。
 - 每个执行会话发送自己的 `x-session-affinity`，值为该 Pi session ID。父子关系另存元数据，不复用父会话 ID。
 - 正常关闭会中止执行任务；异常重启按最近检查点恢复统计并标记中断，不自动重放可能有副作用的任务。Pi Web liveness 接口用于避免后台任务被当作空闲会话释放。
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {Coordinator,DEFAULTS,allowedPath,validateSpec,usageFromEntries,usageByModel,blankUsage,treeLines,run,git,atomicJson,elapsed} from '../lib/core.mjs';
+import {Coordinator,DEFAULTS,MAX_WORK_SLICE_MS,allowedPath,validateSpec,usageFromEntries,usageByModel,blankUsage,treeLines,run,git,atomicJson,elapsed} from '../lib/core.mjs';
 
 const spec=(changes={})=>({title:'Update greeting',goal:'Return the greeting specified by the caller',context:'The minimal fixture contains only hello.txt and has no dependencies.',kind:'implementation',requirements:['Write hello in hello.txt'],constraints:['Do not modify unrelated files'],allowedPaths:['hello.txt'],acceptance:[{description:'Greeting content',command:"node -e \"if(require('fs').readFileSync('hello.txt','utf8')!=='hello')process.exit(1)\"",expected:'Exit 0 and exact content hello'}],...changes});
 const submitted={report:{status:'submitted',summary:'Ready for review',evidence:['Changed the greeting']}};
@@ -77,6 +77,38 @@ test('worker blocker blocks dependents and never self-accepts',async t=>{
 test('abort propagates and prevents validation',async t=>{
   const c=await fixture(t,async (_,{signal})=>{await new Promise(r=>{if(signal.aborted)r();else signal.addEventListener('abort',r,{once:true});});return submitted;});
   const a=c.submit(spec());c.cancel(a.id);assert.equal((await done(c,a.id)).status,'cancelled');assert.equal(a.validation,undefined);
+});
+test('hard deadline aborts work, obtains one report and never resumes without a matching decision',async t=>{
+  assert.equal(MAX_WORK_SLICE_MS,1800000);
+  let slices=0,reports=0,firstCwd;const notices=[];
+  const c=await fixture(t,async(j,{signal,control})=>{
+    if(++slices===1){
+      firstCwd=j.cwd;fs.writeFileSync(path.join(j.cwd,'hello.txt'),'partial');
+      control.summarize=async()=>{reports++;return {summary:'Partial file written; final assertion pending'};};
+      await new Promise(r=>signal.addEventListener('abort',r,{once:true}));return submitted; // late delivery cannot win
+    }
+    assert.equal(firstCwd,j.cwd);assert.equal(fs.readFileSync(path.join(j.cwd,'hello.txt'),'utf8'),'partial');
+    fs.writeFileSync(path.join(j.cwd,'hello.txt'),'hello');return submitted;
+  },{maxConcurrent:1});
+  c.handoffAfterMs=1200;c.notify=j=>notices.push(j.status);
+  const j=c.submit(spec());await done(c,j.id);
+  assert.equal(j.status,'paused');assert.equal(j.checkpoint.source,'worker');assert.equal(reports,1);assert.deepEqual(notices,['paused']);
+  await assert.rejects(c.steer(j.id,'continue','finish','stale'),/checkpointId/);
+  await assert.rejects(c.steer(j.id,'guide','bypass'),/checkpointId/);
+  assert.equal(slices,1);assert.equal(j.validation,undefined);
+  await c.steer(j.id,'continue','Finish only the assertion',j.checkpoint.id);await done(c,j.id);
+  assert.equal(j.status,'review',j.reason);assert.equal(slices,2);assert.equal(j.validation[0].code,0);assert.deepEqual(notices,['paused','review']);
+});
+test('failed report yields runtime fallback, stop does not restart work or permit self-acceptance',async t=>{
+  const ready=Promise.withResolvers();let reports=0;
+  const c=await fixture(t,async(_j,{signal,control,onProgress})=>{
+    control.summarize=async()=>{reports++;throw new Error('provider offline');};onProgress({activity:'read started'});ready.resolve();
+    await new Promise(r=>signal.addEventListener('abort',r,{once:true}));return submitted;
+  });
+  const j=c.submit(spec());await ready.promise;await c.steer(j.id,'summary');await done(c,j.id);
+  assert.equal(reports,1);assert.equal(j.status,'paused');assert.equal(j.checkpoint.source,'runtime');assert.match(j.checkpoint.summary,/read started/);
+  await assert.rejects(c.steer(j.id,'stop'),/checkpointId/);await c.steer(j.id,'stop','',j.checkpoint.id);
+  assert.equal(j.status,'cancelled');await assert.rejects(c.steer(j.id,'continue','restart',j.checkpoint.id),/paused/);
 });
 test('restart freezes elapsed time at last checkpoint; session configuration survives',t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pi-delegation-recovery-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

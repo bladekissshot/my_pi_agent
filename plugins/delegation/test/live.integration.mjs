@@ -11,7 +11,7 @@ const agentDir=path.join(root,'agent');fs.mkdirSync(agentDir,{mode:0o700});
 for(const file of ['models.json','auth.json']){fs.copyFileSync(path.join(sourceAgentDir,file),path.join(agentDir,file));fs.chmodSync(path.join(agentDir,file),0o600);}
 process.env.PI_CODING_AGENT_DIR=agentDir;
 const {createAgentSession,DefaultResourceLoader,ModelRuntime,SettingsManager,SessionManager}=await loadSdk();
-atomicJson(path.join(agentDir,'pi-delegation','config.json'),{...DEFAULTS,execModel:process.env.PI_EXEC_MODEL,execThinking:'low',maxTurns:10,taskTimeoutMs:180000,maxConcurrent:3});
+atomicJson(path.join(agentDir,'pi-delegation','config.json'),{...DEFAULTS,execModel:process.env.PI_EXEC_MODEL,execThinking:'low',taskTimeoutMs:180000,maxConcurrent:3});
 const cwd=path.join(root,'repo');fs.mkdirSync(cwd);await git(['init','-q'],cwd);await git(['config','user.email','test@example.invalid'],cwd);await git(['config','user.name','Test'],cwd);
 fs.writeFileSync(path.join(cwd,'README.md'),'Minimal delegation validation fixture. No dependencies.\n');await git(['add','.'],cwd);await git(['commit','-qm','fixture'],cwd);
 const runtime=await ModelRuntime.create({modelsPath:path.join(agentDir,'models.json'),authPath:path.join(agentDir,'auth.json'),allowModelNetwork:false});

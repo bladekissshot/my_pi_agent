@@ -4,7 +4,9 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 export const TERMINAL = new Set(['accepted', 'blocked', 'failed', 'cancelled', 'interrupted']);
-export const BUSY = new Set(['running', 'validating']);
+export const BUSY = new Set(['running', 'validating', 'reporting']);
+export const MAX_WORK_SLICE_MS = 30 * 60 * 1000;
+
 export const DEFAULTS = { mode: 'off', execModel: '', execThinking: 'low', maxConcurrent: 4, taskTimeoutMs: 600000, panel: true };
 export function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), {recursive:true, mode:0o700});
@@ -20,8 +22,8 @@ export function loadConfig(dir) {
   const c={...DEFAULTS,...readJson(path.join(dir,'config.json'),{})};
   if(!['off','auto'].includes(c.mode)) c.mode='off';
   c.maxConcurrent=Math.max(1,Math.min(8,Number(c.maxConcurrent)||4));
-  delete c.maxTurns; // Ignore the legacy turn limit.
-  c.taskTimeoutMs=Math.max(10000,Math.min(3600000,Number(c.taskTimeoutMs)||600000));
+  delete c.maxTurns; // Older defaults may still contain a turn budget.
+  c.taskTimeoutMs=Math.max(10000,Math.min(3600000,Number(c.taskTimeoutMs)||DEFAULTS.taskTimeoutMs));
   return c;
 }
 export function saveConfig(dir, changes) {
@@ -114,7 +116,7 @@ export async function git(args,cwd) {
   const r=await run('git',args,{cwd});if(r.code!==0)throw new Error(r.stderr.trim()||r.stdout.trim()||'Git command failed');return r.stdout.trim();
 }
 export function elapsed(node, now=Date.now()) {return (node.activeMs||0)+(node.activeSince?now-node.activeSince:0);}
-const states={off:'关闭',idle:'待命',running:'运行',validating:'验证',queued:'排队',waiting:'等待依赖',review:'待验收',accepted:'已验收',blocked:'阻塞',failed:'失败',cancelled:'取消',interrupted:'中断'};
+const states={off:'关闭',idle:'待命',running:'运行',validating:'验证',reporting:'正在取报告',paused:'待主模型决定',queued:'排队',waiting:'等待依赖',review:'待验收',accepted:'已验收',blocked:'阻塞',failed:'失败',cancelled:'取消',interrupted:'中断'};
 const marks={running:'●',validating:'◉',review:'◇',accepted:'✓',blocked:'!',failed:'×',interrupted:'!',queued:'○',waiting:'○'};
 export function fmtNumber(n=0){return n>=1000000?(n/1000000).toFixed(2)+'m':n>=1000?(n/1000).toFixed(1)+'k':String(n);}
 export function fmtTime(ms=0){const s=Math.floor(ms/1000);return s>=3600?`${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`:s>=60?`${Math.floor(s/60)}m ${s%60}s`:`${s}s`;}
@@ -153,8 +155,11 @@ export class Coordinator {
     this.config=config||loadConfig(dir);this.file=path.join(dir,'runs',sessionId+'.json');
     this.state=readJson(this.file,{version:1,sessionId,cwd,createdAt:Date.now(),parent:{model:'',status:'idle',usage:blankUsage(),activeMs:0},jobs:{}});
     this.config={...this.config,...this.state.config};
+    delete this.config.maxTurns; // Restored sessions use the same time-only policy.
     this.active=new Map();this.closed=false;
+    this.handoffAfterMs=MAX_WORK_SLICE_MS;this.reportGraceMs=30000;
     for(const j of Object.values(this.state.jobs))if(BUSY.has(j.status)||['queued','waiting'].includes(j.status)){
+      if(j.status==='reporting'&&j.checkpoint){j.status='paused';j.reason='报告收集被重启打断；请检查已保存的运行快照后决定。';continue;}
       j.activeMs=elapsed(j,this.state.updatedAt||j.activeSince||Date.now());delete j.activeSince;j.status='interrupted';j.reason='宿主已重启；任务未自动重放，请检查工作树后重新派发。';
     }
     if(this.state.parent.activeSince){this.state.parent.activeMs=elapsed(this.state.parent,this.state.updatedAt||this.state.parent.activeSince);delete this.state.parent.activeSince;}
@@ -196,7 +201,7 @@ export class Coordinator {
   pump(){
     if(this.closed||this.config.mode!=='auto')return;
     for(const j of Object.values(this.state.jobs)){
-      if(!['queued','waiting'].includes(j.status))continue;
+      if(!['queued','waiting'].includes(j.status)||this.active.has(j.id))continue;
       const deps=j.spec.dependencies.map(id=>this.state.jobs[id]);
       if(deps.some(d=>['blocked','failed','cancelled','interrupted'].includes(d.status))){j.status='blocked';j.reason='前置任务阻塞，需要主模型处理。';this.persist();continue;}
       if(deps.some(d=>d.status!=='accepted')){j.status='waiting';j.reason='等待前置任务验收。';this.persist();continue;}
@@ -206,20 +211,69 @@ export class Coordinator {
       this.persist();this.execute(j,controller).catch(e=>{j.status='failed';j.reason=e.message;this.finish(j);});
     }
   }
+  // The same gate handles an on-demand summary and the non-extendible work-slice deadline.
+  checkpoint(j,why){
+    const a=this.active.get(j.id);
+    if(!a||j.status!=='running'||a.checkpoint)throw new Error('Only a running task can enter a checkpoint');
+    j.status='reporting';j.reason=why;
+    j.activeMs=elapsed(j);delete j.activeSince;
+    const id=crypto.randomUUID(),fallback={id,at:Date.now(),reason:why,source:'runtime',summary:`No worker narrative available. Last observed: ${j.activity||'worker setup'}; ${j.turns||0} assistant turns. Inspect ${j.cwd||'task status'} and available evidence before deciding.`};
+    j.checkpoint=fallback;this.persist();
+    // Stop work first. The only subsequent model call before a decision is a tool-free report.
+    a.controller.abort(why);a.reportAbort=new AbortController();
+    const signal=a.reportAbort.signal;
+    a.checkpoint=(async()=>{
+      const timer=setTimeout(()=>a.reportAbort.abort('Worker report timed out'),this.reportGraceMs);timer.unref();
+      try{
+        if(a.summarize){
+          const r=await Promise.race([a.summarize(signal,why),new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(new Error(String(signal.reason))),{once:true}))]);
+          if(r?.summary?.trim()&&!signal.aborted){j.checkpoint={...fallback,source:'worker',summary:r.summary.trim().slice(0,3200)};
+            if(r.usage){addUsage(j.reportUsage??=blankUsage(),r.usage);addUsage(j.usage,r.usage);}}
+        }
+      }catch{/* A stalled/offline provider must never release the gate. */}
+      finally{clearTimeout(timer);}
+      if(this.closed||j.status!=='reporting')return;
+      j.status='paused';j.reason='工作已暂停。主模型须阅读检查点报告，选择停止或明确继续。';this.persist();this.notify(j);
+    })();
+  }
+  async steer(id,action,instruction='',checkpointId){
+    const j=this.state.jobs[id];if(!j||this.closed||this.config.mode!=='auto')throw new Error('No controllable task in this main session');
+    const note=instruction.trim();if(note.length>2000)throw new Error('Keep the guidance under 2000 characters');
+    if(j.status==='paused'&&checkpointId!==j.checkpoint?.id)throw new Error('Read the latest checkpoint report and supply its checkpointId before deciding');
+    if(action==='stop'){
+      if(j.status==='reporting')throw new Error('A checkpoint report is pending; read it before deciding');
+      if(!['running','queued','waiting','validating','paused'].includes(j.status))throw new Error('Task is no longer active');
+      this.cancel(id);return 'Stop requested; no further work is authorized.';
+    }
+    if(action==='continue'){
+      if(j.status!=='paused'||!note)throw new Error('Continue requires a paused task and an explicit bounded next step');
+      j.pendingGuidance=note;j.status='queued';delete j.reason;this.persist();this.pump();return 'Continuation queued in the same worktree, with a new bounded work slice.';
+    }
+    if(action==='summary'){this.checkpoint(j,note||'Main model requested a progress report');return 'Ordinary work stopped. A checkpoint report will arrive for your decision.';}
+    if(action!=='guide'||!note||!['queued','waiting','running'].includes(j.status))throw new Error('Guidance requires an unfinished working task and an instruction');
+    const a=this.active.get(id);
+    if(a?.guide&&!a.controller.signal.aborted){await a.guide(note);return 'Steering queued for the next worker turn; not an acknowledgment.';}
+    j.pendingGuidance=[j.pendingGuidance,note].filter(Boolean).join('\n').slice(-4000);this.persist();return 'Guidance recorded for worker startup.';
+  }
   async execute(j,controller){
-    const signal=controller.signal;
+    const signal=controller.signal,a=this.active.get(j.id);
     let validationTimeout;
+    const timeout=setTimeout(()=>{if(!signal.aborted&&j.status==='running')this.checkpoint(j,'Worker hit the work-slice deadline without a delivery');},Math.min(MAX_WORK_SLICE_MS,this.handoffAfterMs));timeout.unref();
+    const progress=patch=>{if(!this.closed){Object.assign(j,patch,patch.usage?{usage:addUsage({...patch.usage},j.reportUsage)}:{});this.persist();}};
     try{
       const root=await git(['rev-parse','--show-toplevel'],this.cwd);
-      j.base=await git(['rev-parse','HEAD'],root);
-      j.branch=`pi-delegation/${j.id}`;
-      j.cwd=path.join(path.dirname(root),path.basename(root)+'-pi-workers',j.id);
-      fs.mkdirSync(path.dirname(j.cwd),{recursive:true});
+      if(!j.worktreeReady){
+        j.base=await git(['rev-parse','HEAD'],root);
+        j.branch=`pi-delegation/${j.id}`;
+        j.cwd=path.join(path.dirname(root),path.basename(root)+'-pi-workers',j.id);
+        fs.mkdirSync(path.dirname(j.cwd),{recursive:true});
+        if(signal.aborted)throw new Error('Cancelled before worker start');
+        await git(['worktree','add','-b',j.branch,j.cwd,j.base],root);j.worktreeReady=true;
+      }
       if(signal.aborted)throw new Error('Cancelled before worker start');
-      await git(['worktree','add','-b',j.branch,j.cwd,j.base],root);
-      if(signal.aborted)throw new Error('Cancelled before worker start');
-      const result=await this.runner(j,{signal,onProgress:(patch)=>{if(!this.closed){Object.assign(j,patch);this.persist();}}});
-      Object.assign(j,result);if(signal.aborted)throw new Error(String(signal.reason||'Cancelled'));
+      const result=await this.runner(j,{root,signal,control:a,onProgress:progress});
+      if(signal.aborted)throw new Error(String(signal.reason||'Cancelled'));
+      progress(result);clearTimeout(timeout);
       if(result.report?.status==='blocked'){j.status='blocked';j.reason=result.report.summary;return;}
       if(result.report?.status!=='submitted'){j.status='blocked';j.reason=result.error||'执行模型未提交结构化结果，请主模型检查。';return;}
       j.status='validating';this.persist();
@@ -233,9 +287,14 @@ export class Coordinator {
         if(r.code!==0||r.timedOut||r.aborted)throw new Error('Validation failed: '+check.description);
       }
       await this.checkScope(j);
+      signal.throwIfAborted();
       j.status='review';j.reason='执行检查已完成，等待主模型审查 diff、集成与验收。';
-    }catch(e){j.status=signal.aborted?'cancelled':'blocked';j.reason=String(signal.reason||e.message);}
-    finally{clearTimeout(validationTimeout);this.finish(j);}
+    }catch(e){if(!a.checkpoint&&!this.closed){j.status=signal.aborted?'cancelled':'blocked';j.reason=String(signal.reason||e.message);}}
+    finally{
+      clearTimeout(timeout);clearTimeout(validationTimeout);
+      if(a.checkpoint){await a.checkpoint;this.active.delete(j.id);if(!this.closed){this.persist();this.pump();}}
+      else this.finish(j);
+    }
   }
   async checkScope(j){
     const diff=await run('git',['diff','--name-only','-z',j.base],{cwd:j.cwd});
@@ -259,25 +318,28 @@ export class Coordinator {
       if(typeof evidence!=='string'||evidence.trim().length<20)throw new Error('Record concrete diff/integration/acceptance evidence');
       j.status='accepted';j.reason='主模型已验收';j.reviewEvidence=evidence;
     }else if(decision==='block'){
-      if(BUSY.has(j.status))throw new Error('Stop running tasks before blocking');
+      if(BUSY.has(j.status)||j.status==='paused')throw new Error('Stop the task through the active controller before blocking');
       j.status='blocked';j.reason=text(evidence,'block reason');
     }else throw new Error('Unknown review decision');
     this.persist();this.pump();return j;
   }
   cancel(id){
     const j=this.state.jobs[id];if(!j)throw new Error('Unknown task');
-    if(this.active.has(id))this.active.get(id).controller.abort('Stopped by user');
+    if(['paused','reporting'].includes(j.status)||this.active.get(id)?.checkpoint){
+      j.status='cancelled';j.reason='检查点任务已停止。';this.active.get(id)?.reportAbort?.abort('Stopped');this.persist();this.pump();
+    }else if(this.active.has(id))this.active.get(id).controller.abort('Stopped by user');
     else if(['queued','waiting'].includes(j.status)){j.status='cancelled';j.reason='用户取消';this.persist();this.pump();}
   }
   async wait(ids,timeoutMs=25000){
     const end=Date.now()+Math.min(30000,Math.max(0,timeoutMs));
-    while(Date.now()<end&&ids.some(id=>{const j=this.state.jobs[id];return j&&['running','validating','queued','waiting'].includes(j.status);}))await new Promise(r=>setTimeout(r,200));
+    while(Date.now()<end&&ids.some(id=>{const j=this.state.jobs[id];return j&&['running','validating','reporting','queued','waiting'].includes(j.status);}))await new Promise(r=>setTimeout(r,200));
     return ids.map(id=>this.state.jobs[id]).filter(Boolean);
   }
   close(){
     if(this.closed)return;this.closed=true;
-    for(const a of this.active.values())a.controller.abort('Host session closed');
+    for(const a of this.active.values()){a.controller.abort('Host session closed');a.reportAbort?.abort('Host session closed');}
     for(const j of Object.values(this.state.jobs))if(BUSY.has(j.status)||['queued','waiting'].includes(j.status)){
+      if(j.status==='reporting'&&j.checkpoint){j.status='paused';j.reason='会话关闭，检查点快照已保留。';continue;}
       j.activeMs=elapsed(j);delete j.activeSince;j.status='interrupted';j.reason='宿主会话已关闭；请检查工作树后重新派发。';
     }
     this.updateParent(this.state.parent.model,this.state.parent.usage,'idle');
