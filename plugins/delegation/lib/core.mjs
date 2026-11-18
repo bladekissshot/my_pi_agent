@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 
 export const TERMINAL = new Set(['accepted', 'blocked', 'failed', 'cancelled', 'interrupted']);
 export const BUSY = new Set(['running', 'validating']);
-export const DEFAULTS = { mode: 'off', execModel: '', execThinking: 'low', maxConcurrent: 4, maxTurns: 16, taskTimeoutMs: 600000, panel: true };
+export const DEFAULTS = { mode: 'off', execModel: '', execThinking: 'low', maxConcurrent: 4, taskTimeoutMs: 600000, panel: true };
 export function atomicJson(file, value) {
   fs.mkdirSync(path.dirname(file), {recursive:true, mode:0o700});
   const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -20,7 +20,7 @@ export function loadConfig(dir) {
   const c={...DEFAULTS,...readJson(path.join(dir,'config.json'),{})};
   if(!['off','auto'].includes(c.mode)) c.mode='off';
   c.maxConcurrent=Math.max(1,Math.min(8,Number(c.maxConcurrent)||4));
-  c.maxTurns=Math.max(2,Math.min(50,Number(c.maxTurns)||16));
+  delete c.maxTurns; // Ignore the legacy turn limit.
   c.taskTimeoutMs=Math.max(10000,Math.min(3600000,Number(c.taskTimeoutMs)||600000));
   return c;
 }
@@ -188,7 +188,7 @@ export class Coordinator {
     const spec=validateSpec(raw);
     for(const dep of spec.dependencies)if(!this.state.jobs[dep])throw new Error(`Unknown dependency ${dep}`);
     const id='t-'+crypto.randomUUID().slice(0,8);
-    const task={id,model,spec,specHash:crypto.createHash('sha256').update(JSON.stringify(spec)).digest('hex'),status:'queued',usage:blankUsage(),activeMs:0,createdAt:Date.now(),config:{thinking:this.config.execThinking,maxTurns:this.config.maxTurns,timeoutMs:this.config.taskTimeoutMs}};
+    const task={id,model,spec,specHash:crypto.createHash('sha256').update(JSON.stringify(spec)).digest('hex'),status:'queued',usage:blankUsage(),activeMs:0,createdAt:Date.now(),config:{thinking:this.config.execThinking,timeoutMs:this.config.taskTimeoutMs}};
     this.state.jobs[id]=task;
     atomicJson(path.join(this.dir,'specs',this.state.sessionId,id+'.json'),{id,hash:task.specHash,spec});
     this.persist();this.pump();return task;
@@ -208,7 +208,7 @@ export class Coordinator {
   }
   async execute(j,controller){
     const signal=controller.signal;
-    const timeout=setTimeout(()=>controller.abort('Task time budget exceeded'),j.config.timeoutMs);timeout.unref();
+    let validationTimeout;
     try{
       const root=await git(['rev-parse','--show-toplevel'],this.cwd);
       j.base=await git(['rev-parse','HEAD'],root);
@@ -223,6 +223,7 @@ export class Coordinator {
       if(result.report?.status==='blocked'){j.status='blocked';j.reason=result.report.summary;return;}
       if(result.report?.status!=='submitted'){j.status='blocked';j.reason=result.error||'执行模型未提交结构化结果，请主模型检查。';return;}
       j.status='validating';this.persist();
+      validationTimeout=setTimeout(()=>controller.abort('Validation time budget exceeded'),j.config.timeoutMs);validationTimeout.unref();
       await this.checkScope(j);
       j.validation=[];
       for(const check of j.spec.acceptance){
@@ -234,7 +235,7 @@ export class Coordinator {
       await this.checkScope(j);
       j.status='review';j.reason='执行检查已完成，等待主模型审查 diff、集成与验收。';
     }catch(e){j.status=signal.aborted?'cancelled':'blocked';j.reason=String(signal.reason||e.message);}
-    finally{clearTimeout(timeout);this.finish(j);}
+    finally{clearTimeout(validationTimeout);this.finish(j);}
   }
   async checkScope(j){
     const diff=await run('git',['diff','--name-only','-z',j.base],{cwd:j.cwd});

@@ -128,7 +128,7 @@ Do not revert, reset, or discard changes you did not make. Never run destructive
 
 - **Source Control:** Do not stage or commit changes unless specifically requested by the user.
 
-Do not spawn subagents unless the user or applicable AGENTS.md/skill instructions explicitly ask for subagents, delegation, or parallel agent work.
+When the user enables an available delegation workflow, use its designated tools within its scope without waiting for a separate request. Outside that workflow, use subagents only when the user or applicable AGENTS.md/skill instructions explicitly ask for them.
 
 ## User steering and delivery
 

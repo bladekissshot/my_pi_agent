@@ -23,14 +23,29 @@ const server=http.createServer(async(req,res)=>{
   const step=counts.get(affinity)||0;counts.set(affinity,step+1);
   const blocked=JSON.stringify(body.system).includes('Deliberate blocker');
   const outOfScope=JSON.stringify(body.system).includes('Scope guard');
+  const prompt=JSON.stringify(body.system);
+  let action;
+  if(prompt.includes('Beyond legacy turn limit')){
+    action=step<18?['read',{path:'hello.txt'}]:['worker_report',{status:'submitted',summary:'Read the fixture',evidence:['hello.txt:1']}];
+  }
+  if(prompt.includes('Timed handoff')){
+    const transcript=JSON.stringify(body.messages);
+    const steerCount=(transcript.match(/TIMED HANDOFF:/g)||[]).length;
+    assert(steerCount<=1,'timed steering is sent exactly once');
+    if(steerCount&&transcript.includes('too late')){
+      assert(transcript.includes('Time to hand off'), 'new work is blocked during handoff');
+      action=['worker_report',{status:'blocked',summary:'Found the file; remaining work not done',evidence:['hello.txt:1']}];
+    }else if(steerCount)action=['write',{path:'hello.txt',content:'too late'}];
+    else{await new Promise(r=>setTimeout(r,30));action=['read',{path:'hello.txt'}];}
+  }
+  if(prompt.includes('Unresponsive worker')){await new Promise(r=>res.once('close',r));return;}
   const id='msg-'+requests.length;
   res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache'});
   const send=(type,data)=>res.write(`event: ${type}\ndata: ${JSON.stringify({type,...data})}\n\n`);
   send('message_start',{message:{id,type:'message',role:'assistant',model:body.model,content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:30,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}});
-  if(step<2){
+  if(action||step<2){
     const report=blocked||step===1;
-    const name=report?'worker_report':'write';
-    const input=report?{status:blocked?'blocked':'submitted',summary:blocked?'Missing a required API decision':'Ready for review',evidence:['Fixture execution']}:{path:outOfScope?'outside.txt':'hello.txt',content:'hello\n'};
+    const [name,input]=action??[report?'worker_report':'write',report?{status:blocked?'blocked':'submitted',summary:blocked?'Missing a required API decision':'Ready for review',evidence:['Fixture execution']}:{path:outOfScope?'outside.txt':'hello.txt',content:'hello\n'}];
     send('content_block_start',{index:0,content_block:{type:'tool_use',id:'call-'+requests.length,name,input:{}}});
     send('content_block_delta',{index:0,delta:{type:'input_json_delta',partial_json:JSON.stringify(input)}});
     send('content_block_stop',{index:0});
@@ -93,6 +108,22 @@ try{
   assert.equal(notices.length,2);assert.equal(fs.readFileSync(path.join(cwd,'hello.txt'),'utf8'),'before\n');
   const bad=await tool.execute('bad',{...input,title:'Scope guard'},undefined,undefined,ctx);await c.wait([bad.details.taskId],10000);
   const jbad=c.state.jobs[bad.details.taskId];assert.equal(jbad.status,'blocked');assert(!fs.existsSync(path.join(jbad.cwd,'outside.txt')));
+  const long=c.submit({...input,title:'Beyond legacy turn limit',kind:'analysis',acceptance:[{description:'Review the evidence',expected:'Exact file location'}]});
+  await c.wait([long.id],10000);
+  assert.equal(long.status,'review',long.reason);
+  assert.equal(requests.filter(r=>r.affinity===long.sessionId).length,19,'legacy turn setting no longer stops workers');
+  const originalRunner=c.runner;
+  c.runner=(task,options)=>originalRunner(task,{...options,handoffAfterMs:450,handoffGraceMs:task.spec.title==='Timed handoff'?1500:300});
+  c.configure({taskTimeoutMs:150}); // A short validation budget must not interrupt execution.
+  const timed=c.submit({...input,title:'Timed handoff'}),silent=c.submit({...input,title:'Unresponsive worker'});
+  await c.wait([timed.id,silent.id],10000);
+  assert.equal(timed.status,'blocked',timed.reason);
+  assert.equal(timed.report?.summary,'Found the file; remaining work not done');
+  assert.equal(fs.readFileSync(path.join(timed.cwd,'hello.txt'),'utf8'),'before\n');
+  assert.equal(timed.validation,undefined);
+  assert.equal(silent.status,'blocked');assert.match(silent.reason,/without a report after the timed handoff/);
+  assert(!c.active.has(timed.id)&&!c.active.has(silent.id));
+  c.configure({taskTimeoutMs:DEFAULTS.taskTimeoutMs});c.runner=originalRunner;
   c.notify=originalNotify;
   const prompting=session.prompt('Local notification test.');
   const firstRequestDeadline=Date.now()+10000;

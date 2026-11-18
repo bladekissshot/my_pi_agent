@@ -5,13 +5,16 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { allowedPath, usageFromEntries } from '../lib/core.mjs';
 
 export async function runWorker(task: any, options: any) {
-  const { agentDir, dataDir, parentId, signal, onProgress } = options;
+  const { agentDir, dataDir, parentId, signal, onProgress,
+    handoffAfterMs=30*60_000, handoffGraceMs=60_000 } = options;
   const runtime = await ModelRuntime.create({authPath:path.join(agentDir,'auth.json'),modelsPath:path.join(agentDir,'models.json'),allowModelNetwork:false});
   const slash=task.model.indexOf('/');
   const model=runtime.getModel(task.model.slice(0,slash),task.model.slice(slash+1));
   if(!model)throw new Error(`Execution model unavailable: ${task.model}`);
   if(!(await runtime.getAvailable()).some(m=>m.provider===model.provider&&m.id===model.id))throw new Error(`No configured credentials for ${task.model}`);
   let report:any,turns=0,session:any,lastError='';
+  let handoffRequested=false,handoffDeliveryFailed=false;
+  let handoffTimer:ReturnType<typeof setTimeout>|undefined,graceTimer:ReturnType<typeof setTimeout>|undefined;
   const settings=SettingsManager.inMemory({compaction:{enabled:false},retry:{enabled:false},defaultThinkingLevel:task.config.thinking});
   const systemPrompt=[
     'You are the execution model in a two-role delegation workflow. The main model owns planning, contract changes, complex debugging, and acceptance.',
@@ -32,6 +35,7 @@ export async function runWorker(task: any, options: any) {
       });
       pi.on('tool_call',(event:any)=>{
         if(report&&event.toolName!=='worker_report')return {block:true,reason:'Report already submitted. Finish the turn.'};
+        if(handoffRequested&&event.toolName!=='worker_report')return {block:true,reason:'Time to hand off. Call worker_report now without starting more work.'};
         if(['edit','write'].includes(event.toolName)) {
           if(task.spec.kind==='analysis')return {block:true,reason:'Read-only task'};
           const target=path.resolve(task.cwd,event.input.path||'');
@@ -51,8 +55,8 @@ export async function runWorker(task: any, options: any) {
         }
       });
       pi.on('turn_end',()=>{
-        // Finish the last permitted tool turn before stopping. A submitted report needs no extra model call.
-        if(report||turns>=task.config.maxTurns)queueMicrotask(()=>session?.abort());
+        // A submitted report needs no extra model call.
+        if(report)queueMicrotask(()=>session?.abort());
       });
     }],
   });
@@ -75,10 +79,21 @@ export async function runWorker(task: any, options: any) {
   const unsubscribe=session.subscribe((event:any)=>{if(event.type==='message_end'||event.type==='message_update')update();});
   try {
     if(signal.aborted)throw new Error('Cancelled before worker prompt');
+    handoffTimer=setTimeout(()=>{
+      if(report||signal.aborted)return;
+      handoffRequested=true;
+      graceTimer=setTimeout(()=>{void abort();},handoffGraceMs);graceTimer.unref();
+      void session.steer('TIMED HANDOFF: Stop work now. Immediately call worker_report with what is complete, the evidence, the blocker (if any), and the next step. Use blocked for incomplete work, submitted only if the whole spec is complete. Do not call other tools. Exit after reporting.',undefined,{source:'extension'})
+        .then((result:string)=>{handoffDeliveryFailed=result!=='queued';},()=>{handoffDeliveryFailed=true;});
+    },handoffAfterMs);handoffTimer.unref();
     await session.prompt('Execute the task spec. If it cannot be executed as specified, report the exact blocker.');
     update();
-    return {report,usage:usageFromEntries(manager.getEntries()),sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),turns,error:lastError||(!report&&turns>=task.config.maxTurns?'Turn budget reached; main-model intervention required.':undefined)};
+    const handoffError=!report&&handoffRequested
+      ? (handoffDeliveryFailed?'Could not queue the timed handoff; worker stopped without a report.':'Worker stopped without a report after the timed handoff. Inspect the session and worktree.')
+      :undefined;
+    return {report,usage:usageFromEntries(manager.getEntries()),sessionId:manager.getSessionId(),sessionFile:manager.getSessionFile(),turns,error:handoffError||lastError||undefined};
   } finally {
+    clearTimeout(handoffTimer);clearTimeout(graceTimer);
     signal.removeEventListener('abort',abort);unsubscribe();session.dispose();
   }
 }
