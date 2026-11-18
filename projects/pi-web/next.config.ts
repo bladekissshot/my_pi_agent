@@ -20,6 +20,7 @@ const gfmAutolinkEmailLoader = join(configDir, "lib/gfm-autolink-email-loader.cj
 // serverExternalPackages matches the resolved node_modules path and otherwise
 // bundles them, breaking SDK dynamic imports. Keep native imports on the server.
 const localRuntimePackages = [
+  "pi-delegation",
   "pi-prompt-manager",
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-agent-core",

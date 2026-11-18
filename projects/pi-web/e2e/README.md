@@ -1,5 +1,11 @@
 # CI and browser regression tests
 
+## Local Delegation configuration
+
+After the monorepo's production `build:web` (not in a serving dev directory), run `node e2e/delegation-settings.mjs` from Pi Web. It starts its own `next start` on a free port with an isolated agent directory and the local Delegation plugin. A mock provider counts requests and must receive **zero**: the browser saves defaults without starting a session, cancels native Git setup without a partial save, enables AUTO on a local test baseline, checks live tool activation and session/default isolation, reopens an unsent session, and checks desktop/390px layouts. Screenshots and the result go to `test-results/delegation-settings/`. `PLAYWRIGHT_CHANNEL=chrome` and `E2E_RELEASE_ROOT` are supported. No user service, credentials or sessions are changed.
+
+## Upstream browser suite
+
 Adapted from @Nuctori's CI/E2E proposal in #617 and #599. The performance
 scanner, reverse reader, sidebar changes, and timing benchmarks are not included.
 

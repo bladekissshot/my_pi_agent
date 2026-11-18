@@ -15,6 +15,8 @@ import { SettingsPanel, SettingsSectionIcon } from "./SettingsPanel";
 import { ProjectTrustDialog, type ProjectTrustFailure } from "./ProjectTrustDialog";
 import { BranchNavigator, hasSessionBranches } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
+import { DelegationPanel } from "./DelegationPanel";
+import type { DelegationAction, DelegationSnapshot } from "pi-delegation/settings";
 import { ToolDefinitionsPanel } from "./ToolDefinitionsPanel";
 import { AgentMiniStrip } from "./AgentMiniStrip";
 import { AgentSessionPanel } from "./AgentSessionPanel";
@@ -435,7 +437,7 @@ export function AppShell() {
   }, []);
 
   // Single active panel — only one dropdown open at a time
-  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "session" | "debug" | null>(null);
+  const [activeTopPanel, setActiveTopPanel] = useState<"agents" | "branches" | "system" | "tools" | "plugins" | "session" | "debug" | null>(null);
   const [topPanelPos, setTopPanelPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -455,7 +457,7 @@ export function AppShell() {
   }, [rightPanelFullWidth]);
 
   const toggleTopPanel = useCallback((
-    panel: "agents" | "branches" | "system" | "tools" | "session" | "debug",
+    panel: "agents" | "branches" | "system" | "tools" | "plugins" | "session" | "debug",
     keepMobileToolbarOpen = false,
   ) => {
     if (isMobile) setSidebarOpen(false);
@@ -472,6 +474,25 @@ export function AppShell() {
   const closeDebugPanel = useCallback((restoreFocus: boolean) => {
     setActiveTopPanel((panel) => panel === "debug" ? null : panel);
     if (restoreFocus) requestAnimationFrame(() => focusIfLost(document, debugButtonRef.current));
+  }, []);
+
+  const pluginsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [extensionUiOpen, setExtensionUiOpen] = useState(false);
+  const delegationActionRef = useRef<((request: DelegationAction) => Promise<DelegationSnapshot>) | null>(null);
+  const delegationSessionIdReaderRef = useRef<(() => string | null) | null>(null);
+  const handleDelegationActionChange = useCallback((action: ((request: DelegationAction) => Promise<DelegationSnapshot>) | null, getSessionId?: () => string | null) => {
+    delegationActionRef.current = action;
+    delegationSessionIdReaderRef.current = getSessionId ?? null;
+  }, []);
+  const readDelegationSessionId = useCallback(() => delegationSessionIdReaderRef.current?.() ?? null, []);
+  const handleDelegationAction = useCallback((request: DelegationAction) => {
+    const action = delegationActionRef.current;
+    if (!action) return Promise.reject(new Error("Open a chat before configuring delegation"));
+    return action(request);
+  }, []);
+  const closePluginsPanel = useCallback((restoreFocus: boolean) => {
+    setActiveTopPanel(panel => panel === "plugins" ? null : panel);
+    if (restoreFocus) requestAnimationFrame(() => focusIfLost(document, pluginsButtonRef.current));
   }, []);
 
   const handleSystemInfoToggle = useCallback((
@@ -2103,6 +2124,31 @@ export function AppShell() {
           </svg>
           {!mobile && <span>{translate("tools.label")}</span>}
         </button>
+        <button
+          ref={pluginsButtonRef}
+          type="button"
+          onClick={() => toggleTopPanel("plugins", mobile)}
+          disabled={mobile && !showChat}
+          title={translate("delegation.title")}
+          aria-label={translate("delegation.title")}
+          aria-expanded={activeTopPanel === "plugins"}
+          aria-controls="top-plugins-panel"
+          data-mobile-toolbar-action={mobile ? "plugins" : undefined}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
+            height: "100%", padding: mobile ? 0 : "0 12px",
+            background: activeTopPanel === "plugins" ? "var(--bg-selected)" : "none",
+            border: "none", borderRight: "1px solid var(--border)",
+            borderTop: activeTopPanel === "plugins" ? "2px solid var(--accent)" : "2px solid transparent",
+            color: activeTopPanel === "plugins" ? "var(--text)" : "var(--text-muted)",
+            cursor: mobile && !showChat ? "not-allowed" : "pointer",
+            opacity: mobile && !showChat ? 0.45 : 1, fontSize: 11, whiteSpace: "nowrap",
+          }}
+        >
+          <SettingsSectionIcon section="plugins" />
+          {!mobile && <span>{translate("delegation.tab")}</span>}
+        </button>
       </div>
     );
   };
@@ -2627,6 +2673,8 @@ export function AppShell() {
               maxHeight: `calc(100dvh - ${topPanelPos.top}px)`,
               overflowY: "auto",
               zIndex: 500,
+              // Keep the form mounted, but never cover the plugin's native confirmation dialog.
+              visibility: activeTopPanel === "plugins" && extensionUiOpen ? "hidden" : undefined,
             }}>
               {activeTopPanel === "agents" && activeSessionFamily && selectedSession && (
                 <AgentSessionPanel
@@ -2653,6 +2701,18 @@ export function AppShell() {
                   prompt={systemPrompt}
                   translate={translate}
                 />
+              )}
+              {activeTopPanel === "plugins" && (
+                <div id="top-plugins-panel">
+                  <DelegationPanel
+                    key={sessionKey}
+                    sessionId={selectedSession?.id ?? null}
+                    onAction={handleDelegationAction}
+                    getSessionId={readDelegationSessionId}
+                    onManagePlugins={() => { setActiveTopPanel(null); openSettingsSection("plugins"); }}
+                    onClose={closePluginsPanel}
+                  />
+                </div>
               )}
               {activeTopPanel === "tools" && (
                 <ToolDefinitionsPanel
@@ -2913,6 +2973,8 @@ export function AppShell() {
               onSystemPromptChange={handleSystemPromptChange}
               onSystemToolsChange={handleSystemToolsChange}
               onSystemInfoLoaderChange={handleSystemInfoLoaderChange}
+              onDelegationActionChange={handleDelegationActionChange}
+              onExtensionUiOpenChange={setExtensionUiOpen}
               onDebugSnapshotReaderChange={handleDebugSnapshotReaderChange}
               onSessionStatsChange={handleSessionStatsChange}
               onSessionStatsPanelOpen={openSessionStatsPanel}

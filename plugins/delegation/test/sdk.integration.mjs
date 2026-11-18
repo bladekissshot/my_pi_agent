@@ -5,6 +5,7 @@ import http from 'node:http';
 import assert from 'node:assert/strict';
 import { loadSdk, repositoryRoot } from './sdk-loader.mjs';
 import {git,atomicJson,DEFAULTS} from '../lib/core.mjs';
+import {getSettingsController,readDefaultSettings} from '../lib/settings.mjs';
 
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'pi-delegation-sdk-'));
 const agentDir=path.join(root,'agent');fs.mkdirSync(agentDir);process.env.PI_CODING_AGENT_DIR=agentDir;
@@ -28,7 +29,11 @@ const server=http.createServer(async(req,res)=>{
   const outOfScope=JSON.stringify(body.system).includes('Scope guard');
   const boardWorker=JSON.stringify(body.system).includes('Board handoff fixture');
   const longWorker=JSON.stringify(body.system).includes('Long investigation fixture');
-  if(longWorker&&step===0)investigationPrompt=JSON.stringify(body.system);
+  if(longWorker&&step===0){
+    investigationPrompt=JSON.stringify(body.system);
+    // Spend longer working than the separate validation budget, without racing Git startup on Windows.
+    await new Promise(r=>setTimeout(r,2500));
+  }
   const reportStep=longWorker?51:boardWorker?2:1;
   const sawGoal=JSON.stringify(body.messages).includes('Deliver fixture milestone');
   if(JSON.stringify(body.system).includes('Unresponsive worker')||JSON.stringify(body.messages).includes('unresponsive-fixture-goal')){
@@ -86,11 +91,28 @@ try{
   };
   await session.bindExtensions({mode:'rpc',uiContext:ui,onError:e=>errors.push(e.message)});
   assert(widgets.some(w=>w.key==='Delegation · 任务树'));assert(!session.getActiveToolNames().includes('delegate_task'));
-  await session.prompt('/delegation auto');assert(!session.getActiveToolNames().includes('delegate_task'));assert(!fs.existsSync(path.join(cwd,'.git')));
+  const settingsBridge=getSettingsController(path.join(agentDir,'pi-delegation'),session.sessionId);
+  assert(settingsBridge,'started plugin publishes its settings interface');
+  const initial=await settingsBridge.snapshot(),defaultsBefore=readDefaultSettings(path.join(agentDir,'pi-delegation'));
+  const changed=await settingsBridge.execute({action:'apply',patch:{maxConcurrent:2,taskTimeoutMs:120000,panel:false},revision:initial.revision});
+  assert.equal(changed.config.taskTimeoutMs,120000);assert(!('maxTurns' in changed.config));assert.equal(changed.config.panel,false);
+  assert.deepEqual(readDefaultSettings(path.join(agentDir,'pi-delegation')),defaultsBefore,'session apply never changes defaults');
+  await assert.rejects(settingsBridge.execute({action:'apply',patch:{execModel:'missing/model',maxConcurrent:3},revision:changed.revision}));
+  assert.equal((await settingsBridge.snapshot()).revision,changed.revision,'invalid model does not partially apply budgets');
+  await session.prompt('/delegation limit 3');
+  await assert.rejects(settingsBridge.execute({action:'apply',patch:{panel:true},revision:changed.revision}),{status:409});
+  const latest=await settingsBridge.snapshot();
+  await settingsBridge.execute({action:'apply',patch:{maxConcurrent:4,taskTimeoutMs:600000,panel:true},revision:latest.revision});
+  const beforeAuto=await settingsBridge.snapshot();
+  await assert.rejects(settingsBridge.execute({action:'apply',patch:{mode:'auto',maxConcurrent:3},revision:beforeAuto.revision}));
+  assert.equal((await settingsBridge.snapshot()).revision,beforeAuto.revision,'cancelled repository setup applies nothing');
+  assert(!session.getActiveToolNames().includes('delegate_task'));assert(!fs.existsSync(path.join(cwd,'.git')));
   cancelUrl=false;
   await session.prompt('/delegation auto');assert(!session.getActiveToolNames().includes('delegate_task'));assert(!fs.existsSync(path.join(cwd,'.git')));
   confirmBaseline=true;
-  await session.prompt('/delegation auto');assert(session.getActiveToolNames().includes('delegate_task'));
+  const readyConfig=await settingsBridge.snapshot();
+  await settingsBridge.execute({action:'apply',patch:{mode:'auto'},revision:readyConfig.revision});
+  assert(session.getActiveToolNames().includes('delegate_task'));
   assert(setupInputs>=3);assert.equal(setupConfirmations,2);
   assert.equal(await git(['show','HEAD:hello.txt'],cwd),'before');
   assert.equal(await git(['ls-remote',remote],cwd),'','setup did not publish');
@@ -113,6 +135,9 @@ try{
   assert(!fs.existsSync(path.join(unprepared,'.git')));
   const a=await tool.execute('a',input,undefined,undefined,ctx);
   const b=await tool.execute('b',{...input,title:'Deliberate blocker'},undefined,undefined,ctx);
+  const runningConfig=await settingsBridge.snapshot();
+  await settingsBridge.execute({action:'apply',patch:{taskTimeoutMs:180000},revision:runningConfig.revision});
+  assert.equal(c.state.jobs[a.details.taskId].config.timeoutMs,600000,'existing tasks retain their validation budget snapshot');
   await c.wait([a.details.taskId,b.details.taskId],15000);
   const ja=c.state.jobs[a.details.taskId],jb=c.state.jobs[b.details.taskId];
   assert.equal(ja.status,'review',ja.reason);assert.equal(jb.status,'blocked',jb.reason);
@@ -122,7 +147,7 @@ try{
   assert.equal(notices.length,2);assert.equal(fs.readFileSync(path.join(cwd,'hello.txt'),'utf8'),'before\n');
   const bad=await tool.execute('bad',{...input,title:'Scope guard'},undefined,undefined,ctx);await c.wait([bad.details.taskId],10000);
   const jbad=c.state.jobs[bad.details.taskId];assert.equal(jbad.status,'blocked');assert(!fs.existsSync(path.join(jbad.cwd,'outside.txt')));
-  c.configure({taskTimeoutMs:150}); // A short validation budget must not interrupt execution.
+  c.configure({taskTimeoutMs:2000}); // Only starts when the work has been submitted.
   const long=await tool.execute('long',{...input,title:'Long investigation fixture',kind:'analysis',acceptance:[{description:'Read only',expected:'Submit findings'}]},undefined,undefined,ctx);
   const [investigation]=await c.wait([long.details.taskId],25000);
   assert.equal(investigation.status,'review',investigation.reason);
@@ -136,7 +161,8 @@ try{
   assert.equal(silent.status,'paused',silent.reason);assert.equal(silent.checkpoint.source,'runtime');
   assert.equal(requests.filter(r=>r.affinity===silent.sessionId).length,2,'one work request and exactly one unsuccessful report request');
   assert.equal(await git(['diff','--exit-code',silent.base,'--','hello.txt'],silent.cwd),'');assert.equal(silent.validation,undefined);
-  await c.steer(silent.id,'stop','',silent.checkpoint.id);
+  assert((await settingsBridge.snapshot()).tasks.some(task=>task.id===silent.id&&task.status==='paused'));
+  await settingsBridge.execute({action:'stop',taskId:silent.id});assert.equal(silent.status,'cancelled');
   c.handoffAfterMs=30*60_000;c.reportGraceMs=30_000;
   const handoff=await tool.execute('handoff',{...input,title:'Board handoff fixture',kind:'analysis',acceptance:[{description:'No code changes',expected:'confirm shared goal'}]},undefined,undefined,ctx);
   const [peer]=await c.wait([handoff.details.taskId],10000);
@@ -174,5 +200,7 @@ try{
   console.log(JSON.stringify(result,null,2));
 }finally{
   releaseFirst.resolve();releaseSecond.resolve();
-  await session.extensionRunner.emit({type:'session_shutdown'});session.dispose();await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});
+  await session.extensionRunner.emit({type:'session_shutdown'});
+  assert.equal(getSettingsController(path.join(agentDir,'pi-delegation'),session.sessionId),undefined,'shutdown removes the settings interface');
+  session.dispose();await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});
 }

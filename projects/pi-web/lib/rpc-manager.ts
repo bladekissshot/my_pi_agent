@@ -6,6 +6,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { isDeepStrictEqual } from "util";
 import { prepareSessionPrompt, sessionPromptExtension } from "./prompt-manager";
+import { executeDelegationAction } from "./delegation-settings";
 import { validateAgentImages } from "./image-attachments";
 import { EXTENSION_REPORTED_CODE } from "./agent-client";
 import { cwdMissingError } from "./missing-cwd";
@@ -1072,7 +1073,8 @@ export class AgentSessionWrapper {
     return type === "prompt"
       || type === "steer"
       || type === "follow_up"
-      || type === "get_commands";
+      || type === "get_commands"
+      || type === "delegation_settings";
   }
 
   private async withFinalIdleReset<T>(operation: () => Promise<T>): Promise<T> {
@@ -1339,6 +1341,10 @@ export class AgentSessionWrapper {
 
     const tracksMutation = !allowedDuringReplacement;
     if (tracksMutation) this.activeMutatingCommands += 1;
+    // Like an extension slash command, a settings operation may wait on a native dialog.
+    // Keep it running for idle eviction, reload, leases and the sidebar, without a model turn.
+    const delegationCommand = type === "delegation_settings";
+    if (delegationCommand) this.pendingPromptCount += 1;
     // A prompt counts from its arrival: a `!` sent right after it must not start
     // while it waits on the extensions or its admission, and then refuse it.
     let arrivingPrompt = type === "prompt";
@@ -1888,6 +1894,17 @@ export class AgentSessionWrapper {
         return { commands };
       }
 
+      case "delegation_settings": {
+        if (this.hasBlockingUiRequest()) throw new Error("Answer the existing extension dialog first");
+        const releaseAdmission = await this.acquirePromptAdmission();
+        try {
+          if (!this.isAlive()) throw new Error("Session has closed");
+          // Native repository dialogs use the same Stop/cancellation mechanism as slash commands.
+          this.renewExtensionUiStop();
+          return await executeDelegationAction(this.sessionId, command.request);
+        } finally { releaseAdmission(); }
+      }
+
       case "set_tools": {
         const toolNames = command.toolNames as string[];
         this.setActiveToolSelection(toolNames);
@@ -2006,6 +2023,11 @@ export class AgentSessionWrapper {
       }
     } finally {
       promptCounted();
+      if (delegationCommand) {
+        this.pendingPromptCount = Math.max(0, this.pendingPromptCount - 1);
+        this.resetIdleTimer();
+        this.notifyAgentRunCompleteIfIdle();
+      }
       if (tracksMutation) this.activeMutatingCommands = Math.max(0, this.activeMutatingCommands - 1);
       this.checkExtensionShutdown();
     }

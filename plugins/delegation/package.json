@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "description": "Optional two-model delegation with executable specs and an embedded Pi Web task tree.",
   "type": "module",
+  "exports": {
+    "./settings": {
+      "types": "./lib/settings.d.mts",
+      "default": "./lib/settings.mjs"
+    }
+  },
   "license": "MIT",
   "keywords": [
     "pi-package"

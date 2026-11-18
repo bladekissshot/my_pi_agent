@@ -1,13 +1,17 @@
 import path from 'node:path';
 import { Type } from 'typebox';
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { Coordinator, git, saveConfig, treeLines, usageFromEntries, usageByModel, validateSpec } from '../lib/core.mjs';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
+import { Coordinator, git, treeLines, usageFromEntries, usageByModel, validateSpec } from '../lib/core.mjs';
+import { assertConfigRevision, configRevision, publicConfig, registerSettingsController, saveDefaultSettings, settingsError, validateConfigPatch } from '../lib/settings.mjs';
+import type { DelegationAction, DelegationSnapshot } from '../lib/settings.mjs';
 import { inspectRepository, prepareRepository, RepositorySetupCancelled } from '../lib/repository.mjs';
 import { runWorker } from './worker.ts';
 import { boardRules, boardToolName, teamBoardTool } from './team-board.ts';
 
 const TOOL_NAMES=['delegate_task','delegate_status','delegate_review','delegate_steer',boardToolName];
 const PANEL='Delegation · 任务树';
+const canStop=(j:any)=>['running','validating','reporting','paused','queued','waiting'].includes(j.status);
 const reference=(m:any)=>m?`${m.provider}/${m.id}`:'';
 const specSchema=Type.Object({
   title:Type.String({description:'Short task label'}),
@@ -22,7 +26,8 @@ const specSchema=Type.Object({
 
 export default function delegation(pi: ExtensionAPI) {
   const agentDir=getAgentDir(),dataDir=path.join(agentDir,'pi-delegation');
-  let current:ExtensionContext|undefined,coordinator:any,timer:any,release:any,lastPanel='';
+  let current:ExtensionContext|undefined,coordinator:any,timer:any,release:any,releaseSettings:any,lastPanel='';
+  let configurationPending=false;
   const controllers=((globalThis as any)[Symbol.for('pi-delegation/controllers/v1')]??=new Map());
   const isPiWeb=()=>((globalThis as any)[Symbol.for('@agegr/pi-web/session-liveness/v1')]?.version===1);
   function nativeMainPicker(ctx:ExtensionContext){
@@ -51,7 +56,7 @@ export default function delegation(pi: ExtensionAPI) {
   function ensure(ctx:ExtensionContext){
     current=ctx;const id=ctx.sessionManager.getSessionId();
     if(coordinator?.state.sessionId===id)return coordinator;
-    coordinator?.close();if(coordinator&&controllers.get(coordinator.state.sessionId)===coordinator)controllers.delete(coordinator.state.sessionId);release?.();lastPanel='';
+    coordinator?.close();if(coordinator&&controllers.get(coordinator.state.sessionId)===coordinator)controllers.delete(coordinator.state.sessionId);release?.();releaseSettings?.();lastPanel='';
     const old=controllers.get(id);old?.close();
     coordinator=new Coordinator({dir:dataDir,sessionId:id,cwd:ctx.cwd,changed:render,
       runner:(task:any,options:any)=>runWorker(task,{...options,agentDir,dataDir,parentId:id}),
@@ -66,6 +71,25 @@ export default function delegation(pi: ExtensionAPI) {
     });
     controllers.set(id,coordinator);
     const owner=coordinator;
+    releaseSettings=registerSettingsController(dataDir,id,{
+      snapshot:()=>settingsSnapshot(ctx,owner),
+      execute:async(request:DelegationAction)=>{
+        if(owner.closed||owner!==coordinator)throw settingsError('会话已关闭，请重新打开。',409);
+        if(request.action==='apply'){
+          if(typeof request.revision!=='string')throw settingsError('缺少配置版本，请刷新后重试。');
+          await applySettings(ctx,request.patch,false,request.revision);
+        }else if(request.action==='repo'){
+          if(configurationPending)throw settingsError('另一个配置操作正在进行。',409);
+          configurationPending=true;
+          try{await repository(ctx);}finally{configurationPending=false;}
+        }else if(request.action==='stop'){
+          if(typeof request.taskId!=='string'||!owner.state.jobs[request.taskId])throw settingsError('任务不存在。',404);
+          if(!canStop(owner.state.jobs[request.taskId]))throw settingsError('任务已结束，请刷新。',409);
+          owner.cancel(request.taskId);
+        }else throw settingsError('不支持的配置操作。');
+        return settingsSnapshot(ctx,owner);
+      },
+    });
     const registry=(globalThis as any)[Symbol.for('@agegr/pi-web/session-liveness/v1')];
     release=registry?.version===1?registry.register({name:'pi-delegation',sessionId:id,sessionFile:ctx.sessionManager.getSessionFile()||undefined,isActive:()=>owner.active.size>0}):()=>{};
     tools();return coordinator;
@@ -79,6 +103,34 @@ export default function delegation(pi: ExtensionAPI) {
     if(result.created)ctx.ui.notify('Git 仓库和本地基线已准备好，可继续委派。','info');
     return result;
   }
+  async function settingsSnapshot(ctx:ExtensionContext,c:any):Promise<DelegationSnapshot>{
+    const ready=await inspectRepository(ctx.cwd);
+    if(c.closed||c!==coordinator)throw settingsError('会话已关闭，请重新打开。',409);
+    const config=publicConfig(c.config);
+    return {config,revision:configRevision(config),sessionId:c.state.sessionId,repositoryReady:ready.ready,
+      models:models(ctx).map((m:any)=>({id:reference(m),name:m.name||m.id,thinkingLevels:getSupportedThinkingLevels(m)})),
+      tasks:Object.values(c.state.jobs).filter(canStop).map((j:any)=>({id:j.id,title:j.spec.title,status:j.status})),
+    };
+  }
+  async function applySettings(ctx:ExtensionContext,raw:unknown,saveDefaults=false,revision?:string){
+    const patch=validateConfigPatch(raw),c=ensure(ctx);
+    if(configurationPending)throw settingsError('另一个配置操作正在进行。',409);
+    configurationPending=true;
+    try{
+      assertConfigRevision(c.config,revision);
+      const next={...c.config,...patch};
+      if(patch.execModel!==undefined||patch.mode==='auto'){
+        if(next.execModel||next.mode==='auto')resolveModel(ctx,next.execModel);
+      }
+      if(patch.mode==='auto')await repository(ctx);
+      if(c.closed||c!==coordinator)throw settingsError('会话已关闭，配置未应用。',409);
+      assertConfigRevision(c.config,revision);
+      if(saveDefaults){const {mode:_mode,...preferences}=patch;saveDefaultSettings(dataDir,preferences);}
+      c.configure(patch);tools();
+      pi.appendEntry('pi-delegation:config',publicConfig(c.config));
+      render();
+    }finally{configurationPending=false;}
+  }
   async function configure(ctx:any,field:string,value:string){
     const c=ensure(ctx);
     if(field==='main') {
@@ -89,19 +141,17 @@ export default function delegation(pi: ExtensionAPI) {
       c.state.parent.model=reference(m);c.persist();return;
     }
     const patch:any={};
-    if(field==='exec'){resolveModel(ctx,value);patch.execModel=value;}
-    else if(field==='mode'){
-      if(!['auto','off'].includes(value))throw new Error('Use auto or off');
-      if(value==='auto'){resolveModel(ctx,c.config.execModel);await repository(ctx);}
-      patch.mode=value;
-    }else if(field==='limit'){
-      const n=Number(value);if(!Number.isInteger(n)||n<1||n>8)throw new Error('并发上限必须为 1–8');patch.maxConcurrent=n;
-    }else if(field==='panel')patch.panel=value!=='off';
-    else throw new Error('Unknown configuration');
-    // Enabling delegation is a per-session opt-in. Other preferences become defaults for new sessions.
-    if(field!=='mode')saveConfig(dataDir,patch);c.configure(patch);tools();
-    pi.appendEntry('pi-delegation:config',{mode:c.config.mode,execModel:c.config.execModel,maxConcurrent:c.config.maxConcurrent,panel:c.config.panel});
-    render();
+    if(field==='exec')patch.execModel=value;
+    else if(field==='mode')patch.mode=value;
+    else if(field==='limit')patch.maxConcurrent=Number(value);
+    else if(field==='thinking')patch.execThinking=value;
+    else if(field==='timeout')patch.taskTimeoutMs=Number(value)*1000;
+    else if(field==='panel'){
+      if(!['on','off'].includes(value))throw new Error('Use panel on or off');
+      patch.panel=value==='on';
+    }else throw new Error('Unknown configuration');
+    // CLI retains its preference-saving behavior; Web explicitly chooses the save target.
+    await applySettings(ctx,patch,field!=='mode');
   }
   async function selectModel(ctx:any,kind:string){
     if(kind==='main'&&isPiWeb()){nativeMainPicker(ctx);return;}
@@ -117,10 +167,10 @@ export default function delegation(pi: ExtensionAPI) {
         if(['auto','off'].includes(action))await configure(ctx,'mode',action);
         else if(action==='repo')await repository(ctx,value||undefined);
         else if(action==='main'||action==='exec')value?await configure(ctx,action,value):await selectModel(ctx,action);
-        else if(action==='limit'||action==='panel')await configure(ctx,action,value);
+        else if(['limit','panel','thinking','timeout'].includes(action))await configure(ctx,action,value);
         else if(action==='stop')c.cancel(value);
         else if(action==='status')pi.sendMessage({customType:'pi-delegation-status',content:treeLines(c.state,c.config,Date.now(),false).join('\n'),display:true},{triggerTurn:false});
-        else if(action)throw new Error('命令：auto | off | repo [仓库地址] | main [provider/model] | exec [provider/model] | limit 4 | panel on/off | status | stop <task-id>');
+        else if(action)throw new Error('命令：auto | off | repo [仓库地址] | main [provider/model] | exec [provider/model] | limit 4 | panel on/off | thinking low | timeout 600 | status | stop <task-id>');
         else {
           const choice=await ctx.ui.select('Delegation · 双模型协作',[
             `模式：${c.config.mode.toUpperCase()} · 点击切换`,
@@ -138,7 +188,7 @@ export default function delegation(pi: ExtensionAPI) {
           else if(choice?.includes('统计面板'))await configure(ctx,'panel',c.config.panel?'off':'on');
           else if(choice==='准备 Git 仓库')await repository(ctx);
           else if(choice==='停止执行任务'){
-            const jobs=Object.values(c.state.jobs).filter((j:any)=>['running','validating','reporting','paused','queued','waiting'].includes(j.status)) as any[];
+            const jobs=Object.values(c.state.jobs).filter(canStop) as any[];
             const v=await ctx.ui.select('选择要停止的任务',jobs.map(j=>`${j.id} ${j.spec.title}`));if(v)c.cancel(v.split(' ')[0]);
           }
         }
@@ -201,5 +251,5 @@ export default function delegation(pi: ExtensionAPI) {
   pi.on('agent_settled',(_event,ctx)=>sync(ctx,'idle'));
   pi.on('ui_prompt_start',(_event,ctx)=>sync(ctx,'blocked'));
   pi.on('ui_prompt_end',(_event,ctx)=>sync(ctx,ctx.isIdle()?'idle':'running'));
-  pi.on('session_shutdown',()=>{clearInterval(timer);coordinator?.close();if(controllers.get(coordinator?.state.sessionId)===coordinator)controllers.delete(coordinator?.state.sessionId);release?.();});
+  pi.on('session_shutdown',()=>{clearInterval(timer);coordinator?.close();if(controllers.get(coordinator?.state.sessionId)===coordinator)controllers.delete(coordinator?.state.sessionId);release?.();releaseSettings?.();});
 }

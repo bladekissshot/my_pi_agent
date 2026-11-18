@@ -152,7 +152,7 @@ export function treeLines(state,config,now=Date.now(),color=true) {
 export class Coordinator {
   constructor({dir,sessionId,cwd,runner,changed=()=>{},notify=()=>{},config}) {
     this.dir=dir;this.cwd=cwd;this.runner=runner;this.changed=changed;this.notify=notify;
-    this.config=config||loadConfig(dir);this.file=path.join(dir,'runs',sessionId+'.json');
+    this.config=config||{...loadConfig(dir),mode:'off'};this.file=path.join(dir,'runs',sessionId+'.json');
     this.state=readJson(this.file,{version:1,sessionId,cwd,createdAt:Date.now(),parent:{model:'',status:'idle',usage:blankUsage(),activeMs:0},jobs:{}});
     this.config={...this.config,...this.state.config};
     delete this.config.maxTurns; // Restored sessions use the same time-only policy.

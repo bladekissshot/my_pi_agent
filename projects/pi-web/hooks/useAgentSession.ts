@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, useReducer } from "react";
 import { stripAnsi } from "@/lib/ansi";
+import type { DelegationAction, DelegationSnapshot } from "pi-delegation/settings";
 import type {
   AgentMessage,
   BlockingExtensionUiRequest,
@@ -251,6 +252,7 @@ export interface UseAgentSessionOptions {
   onSystemToolsChange?: (tools: ToolEntry[] | null) => void;
   /** Registers an action that lazily starts the session and loads its prompt and tools. */
   onSystemInfoLoaderChange?: (loader: (() => Promise<void>) | null) => void;
+  onDelegationActionChange?: (action: ((request: DelegationAction) => Promise<DelegationSnapshot>) | null, getSessionId?: () => string | null) => void;
   /** Registers the debug panel's reader of this page's stream and lease: it reads refs only, never a request. */
   onDebugSnapshotReaderChange?: (reader: (() => DebugClientSession) | null) => void;
   onSessionStatsPanelOpen?: () => void;
@@ -444,7 +446,7 @@ type SlashCommandsResponse = {
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const {
     session, newSessionCwd, newSessionDraftKey, onAgentEnd, onSessionEnded, onToolEnd, onAttentionNeeded, onSessionCreated, onSessionForked, onSideSession,
-    modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onSessionStatsPanelOpen,
+    modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemToolsChange, onSystemInfoLoaderChange, onDelegationActionChange, onSessionStatsPanelOpen,
     onOpenSettings, onDebugSnapshotReaderChange,
   } = opts;
 
@@ -3435,6 +3437,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   useEffect(() => {
     onSystemPromptChange?.(systemPrompt);
   }, [systemPrompt, onSystemPromptChange]);
+
+  const handleDelegationAction = useCallback(async (request: DelegationAction): Promise<DelegationSnapshot> => {
+    const sid = sessionIdRef.current ?? await ensureNewSession();
+    if (!sid || !sessionHookMountedRef.current) throw new Error("Session is no longer open");
+    // Repository setup may ask native extension dialogs, including before the first message.
+    await ensureEventsConnected(sid);
+    if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) throw new Error("Session changed before applying configuration");
+    const result = await sendAgentCommand<DelegationSnapshot>(sid, { type: "delegation_settings", request });
+    if (sessionHookMountedRef.current && sessionIdRef.current === sid) await loadSystemInfo();
+    return result;
+  }, [ensureNewSession, ensureEventsConnected, loadSystemInfo]);
+
+  useEffect(() => {
+    onDelegationActionChange?.(handleDelegationAction, () => sessionIdRef.current);
+    return () => onDelegationActionChange?.(null);
+  }, [handleDelegationAction, onDelegationActionChange]);
 
   useEffect(() => {
     onSystemInfoLoaderChange?.(loadSystemInfo);
