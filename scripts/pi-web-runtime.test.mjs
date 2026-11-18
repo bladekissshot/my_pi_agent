@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { root } from './process.mjs';
 const helper = createRequire(import.meta.url)('./pi-web-runtime.cjs');
@@ -47,6 +47,8 @@ async function fixture(t) {
       const marker = process.env.PI_CODING_AGENT_DIR;
       fs.mkdirSync(marker, {recursive:true});
       fs.appendFileSync(path.join(marker, 'pids.txt'), process.pid + '\\n');
+      console.log('stdout from ' + version);
+      console.error('stderr from ' + version);
       http.createServer((req,res) => {
         if (req.url === '/api/local-refresh' && req.method === 'POST') {
           let body=''; req.on('data',b=>body+=b); req.on('end',()=> {
@@ -134,7 +136,7 @@ test('a real one-shot helper exits after checking and starting the replacement',
     { cwd: config.activeRoot, env: { ...process.env, PI_CODING_AGENT_DIR: config.agentDir, PI_WEB_RUNTIME_INSTANCE: 'old-instance' }, stdio: 'ignore' });
   await new Promise(resolve => setTimeout(resolve, 300));
   const worker = spawn(process.execPath, [config.helperPath, 'refresh', file, job.id, String(old.pid), 'old-instance'],
-    { env: { ...process.env, PI_WEB_PASSWORD: '' }, stdio: ['ignore','pipe','pipe'] });
+    { env: { ...process.env, PI_WEB_PASSWORD: '' }, detached: true, windowsHide: true, stdio: ['ignore','pipe','pipe'] });
   let errors = ''; worker.stderr.on('data', data => errors += data);
   const [code] = await once(worker, 'exit');
   assert.equal(code, 0, errors);
@@ -145,4 +147,33 @@ test('a real one-shot helper exits after checking and starting the replacement',
   const state = await response.json();
   assert.equal(state.current.webVersion, '0.17.0');
   assert.notEqual(state.instance, 'old-instance');
+  const log = await fs.readFile(path.join(config.stateDir, 'refresh.log'), 'utf8');
+  for (const stream of ['stdout', 'stderr']) {
+    assert.equal(log.split(stream + ' from 0.17.0').length - 1, 2, 'both the probe and replacement must write to the refresh log');
+  }
+  await t.test('Windows CLI children can inherit an invisible server console', { skip: process.platform !== 'win32' }, async () => {
+    const dir = path.join(config.agentDir, 'run');
+    const [file] = await fs.readdir(dir);
+    const record = JSON.parse(await fs.readFile(path.join(dir, file), 'utf8'));
+    // Inspect the recorded Next PID after the worker exits. A detached server
+    // rejects AttachConsole and makes Windows open a terminal for its next git call.
+    const script = `
+      $ErrorActionPreference = 'Stop'
+      $ProgressPreference = 'SilentlyContinue'
+      Add-Type -Name ConsoleProbe -Namespace PiWeb -MemberDefinition @'
+        [DllImport("kernel32.dll")] public static extern bool FreeConsole();
+        [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);
+        [DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+        [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr hwnd);
+'@
+      [void][PiWeb.ConsoleProbe]::FreeConsole()
+      if (![PiWeb.ConsoleProbe]::AttachConsole(${record.nextPid})) { exit 2 }
+      if ([PiWeb.ConsoleProbe]::IsWindowVisible([PiWeb.ConsoleProbe]::GetConsoleWindow())) { exit 3 }
+    `;
+    const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
+    const probe = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, encoding: 'utf8' });
+    assert.ifError(probe.error);
+    assert.equal(probe.status, 0, probe.stderr || 'Server must have a console without a window');
+  });
 });

@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
+const { once } = require('node:events');
 const { createRequire, findPackageJSON } = require('node:module');
 const { pathToFileURL } = require('node:url');
 
@@ -132,35 +133,73 @@ async function freePort() {
   await new Promise(resolve => server.close(resolve));
   return port;
 }
-function startNext(root, port, env, log) {
+function startWindowsNext(root, args, env, log, fd) {
+  // A detached Windows process has no console to pass to git or other CLI
+  // children. Let Next inherit the hidden launcher's console and log handles.
+  // Starting it outside Node's child job lets it survive the one-shot worker.
+  const pidFile = `${log}.${crypto.randomUUID()}.pid`;
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    $launch = ConvertFrom-Json -InputObject $env:PI_WEB_WINDOWS_LAUNCH
+    Remove-Item Env:PI_WEB_WINDOWS_LAUNCH
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $launch.node
+    $start.Arguments = $launch.commandLine
+    $start.WorkingDirectory = $launch.root
+    $start.UseShellExecute = $false
+    $start.WindowStyle = 'Hidden'
+    $server = [Diagnostics.Process]::Start($start)
+    try { [IO.File]::WriteAllText($launch.pidFile, [string]$server.Id) }
+    catch { $server.Kill(); throw }
+  `;
+  const powershell = path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
+  try {
+    // Next inherits the real log handles, including after PowerShell exits.
+    // The arguments are a file path and fixed Next flags. None can contain a
+    // double quote or end in a separator. Paths travel as data through PowerShell.
+    const commandLine = args.map(arg => '"' + arg + '"').join(' ');
+    const launch = JSON.stringify({ node: process.execPath, root, commandLine, pidFile });
+    const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      cwd: root, env: { ...env, PI_WEB_WINDOWS_LAUNCH: launch }, windowsHide: true, stdio: ['ignore', fd, fd],
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error('Could not launch the Windows server; see the local refresh log');
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid Windows server PID');
+    return pid;
+  } finally { fs.rmSync(pidFile, { force: true }); }
+}
+async function startNext(root, port, env, log) {
   const release = inspectRelease(root);
   // Keep the upstream proxy-bypass protection on direct restart/probe launches.
   const rotation = require(path.join(root, 'bin/rotate-preview-secrets.js')).rotatePreviewSecrets(path.join(root, '.next'));
   if (!rotation.ok) throw new Error('Could not rotate the release preview secrets safely');
+  const args = [release.next, 'start', '-H', '127.0.0.1', '-p', String(port)];
+  const records = require(path.join(root, 'bin/run-records.js'));
+  const dir = records.getRunDir(env);
   const fd = fs.openSync(log, 'a', 0o600);
+  let child, pid;
   try {
-    const child = spawn(process.execPath, [release.next, 'start', '-H', '127.0.0.1', '-p', String(port)],
-      { cwd: root, env, detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
-    child.once('error', error => { child.startError = error; });
-    child.runtimePassword = env.PI_WEB_PASSWORD;
-    // Direct Next.js starts remain visible to the existing status/stop CLI.
-    // On POSIX it is recognized as an orphaned Next server, on Windows as Node.
-    child.once('spawn', () => {
-      try {
-        const records = require(path.join(root, 'bin/run-records.js'));
-        const dir = records.getRunDir(env);
-        records.writeRunRecord(dir, { pid: child.pid, nextPid: child.pid, port, hostname: '127.0.0.1',
-          url: `http://127.0.0.1:${port}`, version: release.webVersion, startedAt: new Date().toISOString() });
-        child.once('exit', () => records.removeRunRecord(dir, child.pid));
-      } catch (error) { child.startError = error; }
-    });
-    return child;
+    if (process.platform === 'win32') {
+      pid = startWindowsNext(root, args, env, log, fd);
+    } else {
+      child = spawn(process.execPath, args, { cwd: root, env, detached: true, stdio: ['ignore', fd, fd] });
+      await once(child, 'spawn');
+      pid = child.pid;
+    }
   } finally { fs.closeSync(fd); }
+  const server = { pid, runtimePassword: env.PI_WEB_PASSWORD, unref: () => child?.unref(),
+    removeRecord: () => records.removeRunRecord(dir, pid) };
+  try {
+    records.writeRunRecord(dir, { pid, nextPid: pid, port, hostname: '127.0.0.1',
+      url: `http://127.0.0.1:${port}`, version: release.webVersion, startedAt: new Date().toISOString() });
+    return server;
+  } catch (error) { await stopChild(server); throw error; }
 }
 async function ready(child, port, expected, instance, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (child.startError || child.exitCode !== null || child.signalCode !== null) throw new Error('The target server exited during startup');
+    if (!isAlive(child.pid)) throw new Error('The target server exited during startup');
     try {
       const headers = child.runtimePassword ? { Authorization: 'Basic ' + Buffer.from(`pi:${child.runtimePassword}`).toString('base64') } : {};
       const response = await fetch(`http://127.0.0.1:${port}/api/local-refresh`, { headers, signal: AbortSignal.timeout(2000) });
@@ -175,13 +214,16 @@ async function ready(child, port, expected, instance, timeoutMs = 45000) {
   throw new Error('The target did not pass its startup health check');
 }
 async function stopChild(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise(resolve => child.once('exit', resolve));
-  let timer;
-  child.kill();
-  await Promise.race([exited, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]);
-  clearTimeout(timer);
-  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+  if (!child) return;
+  try {
+    if (isAlive(child.pid)) {
+      process.kill(child.pid);
+      const deadline = Date.now() + 3000;
+      while (isAlive(child.pid) && Date.now() < deadline) await pause(100);
+      if (isAlive(child.pid)) { process.kill(child.pid, 'SIGKILL'); await waitGone(child.pid); }
+    }
+  } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  child.removeRecord();
 }
 async function waitGone(pid) {
   const deadline = Date.now() + 10000;
@@ -218,7 +260,7 @@ async function refresh(file, id, oldPid, instance, hooks = {}) {
     probeEnv.PI_CODING_AGENT_DIR = path.join(config.stateDir, 'probe', id);
     delete probeEnv.PI_WEB_PASSWORD;
     delete probeEnv.PI_WEB_LOCAL_REFRESH_CONFIG;
-    preview = ops.startNext(config.targetRoot, port, probeEnv, log);
+    preview = await ops.startNext(config.targetRoot, port, probeEnv, log);
     await ops.ready(preview, port, target, probeInstance);
     await ops.stopChild(preview); preview = null;
     // The service sets an admission gate and checks all jobs again before shutdown.
@@ -232,7 +274,7 @@ async function refresh(file, id, oldPid, instance, hooks = {}) {
     const nextInstance = crypto.randomUUID();
     const nextEnv = environment(config, file, nextInstance);
     // Loopback health checks authenticate when browser password login is enabled.
-    replacement = ops.startNext(config.targetRoot, config.port, nextEnv, log);
+    replacement = await ops.startNext(config.targetRoot, config.port, nextEnv, log);
     await ops.ready(replacement, config.port, target, nextInstance);
     replacement.unref();
     update('complete', { finishedAt: Date.now() });
@@ -244,7 +286,7 @@ async function refresh(file, id, oldPid, instance, hooks = {}) {
       try {
         atomicJson(file, config);
         const rollbackInstance = crypto.randomUUID();
-        const rollback = ops.startNext(config.activeRoot, config.port, environment(config, file, rollbackInstance), log);
+        const rollback = await ops.startNext(config.activeRoot, config.port, environment(config, file, rollbackInstance), log);
         try { await ops.ready(rollback, config.port, previous, rollbackInstance); }
         catch (cause) { await ops.stopChild(rollback); throw cause; }
         rollback.unref();
