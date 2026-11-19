@@ -119,7 +119,7 @@ try{
   assert.equal(requests.length+mainCalls,0,'setup did not call a model');
   const c=globalThis[Symbol.for('pi-delegation/controllers/v1')].get(session.sessionId);assert(c);
   const notices=[],originalNotify=c.notify;c.notify=j=>notices.push(j.id);
-  const input={title:'SDK fixture',goal:'Return exactly hello from the fixture file',context:'A committed minimal Git fixture contains hello.txt. Change just this file.',kind:'implementation',requirements:['Write hello in hello.txt'],constraints:['No changes beyond hello.txt'],allowedPaths:['hello.txt'],acceptance:[{description:'Greeting',command:"node -e \"if(require('fs').readFileSync('hello.txt','utf8').trim()!=='hello')process.exit(1)\"",expected:'Exit zero'}]};
+  const input={environment:{expectedRepoRoot:cwd,requiredFiles:['hello.txt']},title:'SDK fixture',goal:'Return exactly hello from the fixture file',context:'A committed minimal Git fixture contains hello.txt. Change just this file.',kind:'implementation',requirements:['Write hello in hello.txt'],constraints:['No changes beyond hello.txt'],allowedPaths:['hello.txt'],acceptance:[{description:'Greeting',command:"node -e \"if(require('fs').readFileSync('hello.txt','utf8').trim()!=='hello')process.exit(1)\"",expected:'Exit zero'}]};
   const tool=session.extensionRunner.getToolDefinition('delegate_task');
   const ctx=session.extensionRunner.createToolContext('test',undefined);
   const board=session.extensionRunner.getToolDefinition('team_board');
@@ -129,10 +129,15 @@ try{
   assert.match(post.content[0].text,/\/main \| goal \| Deliver fixture milestone/);
   assert(fs.existsSync(path.join(cwd,'TeamBoard.MD')));assert(!fs.existsSync(path.join(subdir,'TeamBoard.MD')));
   const unprepared=path.join(root,'unprepared');fs.mkdirSync(unprepared);
-  const setupResult=await tool.execute('needs-setup',input,undefined,undefined,{...ctx,cwd:unprepared,hasUI:false});
+  const setupResult=await tool.execute('needs-setup',{...input,environment:{...input.environment,expectedRepoRoot:unprepared}},undefined,undefined,{...ctx,cwd:unprepared,hasUI:false});
   assert.equal(setupResult.isError,true);assert.equal(setupResult.details.setupRequired,true);
   assert.equal(Object.keys(c.state.jobs).length,0,'setup guidance does not create a blocked task');
   assert(!fs.existsSync(path.join(unprepared,'.git')));
+  const wrongRepo=path.join(root,'other-repo');fs.mkdirSync(wrongRepo);await git(['init','-q'],wrongRepo);
+  const mismatch=await tool.execute('wrong-repository',{...input,environment:{...input.environment,expectedRepoRoot:wrongRepo}},undefined,undefined,ctx);
+  assert.equal(mismatch.isError,true);assert.equal(mismatch.details.environmentRejected,true);
+  assert.equal(Object.keys(c.state.jobs).length,0);assert.equal(requests.length+mainCalls,0);
+  assert.match(mismatch.content[0].text,/Repository mismatch/);
   const a=await tool.execute('a',input,undefined,undefined,ctx);
   const b=await tool.execute('b',{...input,title:'Deliberate blocker'},undefined,undefined,ctx);
   const runningConfig=await settingsBridge.snapshot();
@@ -153,10 +158,10 @@ try{
   assert.equal(investigation.status,'review',investigation.reason);
   // Count real requests, not SDK message_end events (which can include a synthetic abort at shutdown).
   assert.equal(counts.get(investigation.sessionId),52,'all 51 tool rounds plus submission, with no extra model call');
-  for(const field of [investigation.id,session.sessionId,investigation.model,investigation.spec.kind])assert(investigationPrompt.includes(field),`worker prompt must identify ${field}`);
+  for(const field of [investigation.id,session.sessionId,investigation.model,investigation.spec.kind,investigation.base,'Verified environment'])assert(investigationPrompt.includes(field),`worker prompt must identify ${field}`);
   c.configure({taskTimeoutMs:DEFAULTS.taskTimeoutMs});
   c.handoffAfterMs=2500;c.reportGraceMs=450;
-  const silent=c.submit({...input,title:'Unresponsive worker',goal:'Finish the unresponsive-fixture-goal'});
+  const silent=await c.submit({...input,title:'Unresponsive worker',goal:'Finish the unresponsive-fixture-goal'});
   await c.wait([silent.id],10000);
   assert.equal(silent.status,'paused',silent.reason);assert.equal(silent.checkpoint.source,'runtime');
   assert.equal(requests.filter(r=>r.affinity===silent.sessionId).length,2,'one work request and exactly one unsuccessful report request');
@@ -189,7 +194,7 @@ try{
   const previousMain=mainCalls;delayNextMain=true;
   const prompting=session.prompt('Local notification test.');
   await until(()=>mainCalls>previousMain);
-  const notifying=c.submit({...input,title:'Completion while main is busy'});
+  const notifying=await c.submit({...input,title:'Completion while main is busy'});
   await c.wait([notifying.id],10000);await prompting;
   assert.equal(mainCalls-previousMain,2,'completion is consumed during active turn, without a late follow-up turn');
   assert(session.sessionManager.getEntries().some(e=>e.type==='custom_message'&&e.customType==='pi-delegation-result'));

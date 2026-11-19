@@ -26,7 +26,8 @@ export async function runWorker(task: any, options: any) {
     task.spec.kind==='analysis'?'This is a read-only investigation. Do not modify project files; team_board is the only coordination-write exception.':'Implement the task and run its acceptance checks. Do not weaken tests or acceptance criteria to make them pass.',
     'The main model can steer your next step. Follow guidance within the immutable spec; report a blocker instead of widening scope. Only the main model can steer, stop, or authorize continuation. A progress summary is not delivery.',
     'Before finishing, call worker_report. submitted means ready for main-model review, not accepted. Give concise evidence and blockers; do not paste whole files.',
-    `Task ${task.id}. Base commit ${task.base}. Immutable spec hash ${task.specHash}.`,
+    `Task ${task.id}. Immutable spec hash ${task.specHash}. Verified environment: ${JSON.stringify(task.environment)}`,
+    'The verified checkout is your only working directory; repoRoot identifies the parent repository, not a place to work. Required files were checked at the baseline, and parent uncommitted changes are not supplied.',
     JSON.stringify(task.spec,null,2),
   ].join('\n\n');
   const loader=new DefaultResourceLoader({

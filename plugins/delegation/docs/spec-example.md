@@ -8,6 +8,11 @@
   "goal": "让 double(n) 对零、正整数及负整数返回两倍的数值。",
   "context": "double.mjs 已导出 double(n)，目前会抛出未实现异常。tests/double.test.mjs 已包含固定用例。工程使用 Node 内置测试，无外部依赖。",
   "kind": "implementation",
+  "environment": {
+    "expectedRepoRoot": "E:/workspace/example",
+    "requiredFiles": ["double.mjs", "tests/double.test.mjs"],
+    "minNodeMajor": 24
+  },
   "requirements": ["保持 export function double(n) 的接口", "double(0) 为 0，double(3) 为 6，double(-2) 为 -4"],
   "constraints": ["不得修改测试或其他模块", "不安装依赖，不扩大类型约定"],
   "allowedPaths": ["double.mjs"],
@@ -19,6 +24,8 @@
   "dependencies": []
 }
 ```
+
+替换 `expectedRepoRoot` 为你实际用 Git 查到的项目根目录；它必须与父会话的仓库一致。`requiredFiles` 只列已提交且开工前必须存在的文件。若只允许从某个提交开工，可填完整的 `expectedBase`；由前置任务推进 HEAD 时可省略。
 
 插件验证后进入待验收。主模型读取 `delegate_status` 中的工作树和检查输出，审查 diff，集成并测试后，以具体证据调用 `delegate_review`。依赖后继任务需要先把前置成果集成并提交到父仓库，再验收放行。
 

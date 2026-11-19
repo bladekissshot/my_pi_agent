@@ -58,9 +58,64 @@ function textList(value,name,min=1) {
   if(!Array.isArray(value)||value.length<min)throw new Error(`Spec requires ${name}`);
   return value.map(v=>text(v,name));
 }
+function validateEnvironment(raw) {
+  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('Spec requires an environment with expectedRepoRoot and requiredFiles');
+  const expectedRepoRoot=text(raw.expectedRepoRoot,'environment.expectedRepoRoot');
+  if(!path.isAbsolute(expectedRepoRoot)||/[\x00-\x1f]/.test(expectedRepoRoot))throw new Error('environment.expectedRepoRoot must be an absolute local path');
+  const requiredFiles=[...new Set(textList(raw.requiredFiles,'environment.requiredFiles',0))];
+  if(requiredFiles.length>32||requiredFiles.some(file=>/[\\:*?\x00-\x1f]/.test(file)||file.split('/').some(part=>!part||part==='.'||part==='..'||part.toLowerCase()==='.git'))){
+    throw new Error('environment.requiredFiles must contain at most 32 exact repository-relative file paths');
+  }
+  const {expectedBase,minNodeMajor}=raw;
+  if(expectedBase!==undefined&&(typeof expectedBase!=='string'||!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(expectedBase)))throw new Error('environment.expectedBase must be a full Git commit ID');
+  if(minNodeMajor!==undefined&&(!Number.isSafeInteger(minNodeMajor)||minNodeMajor<1))throw new Error('environment.minNodeMajor must be a positive integer');
+  return {expectedRepoRoot,requiredFiles,...(expectedBase===undefined?{}:{expectedBase:expectedBase.toLowerCase()}),...(minNodeMajor===undefined?{}:{minNodeMajor})};
+}
+
+export class TaskEnvironmentError extends Error {}
+export function assertExpectedRepo(actual,expected) {
+  const root=fs.realpathSync.native(actual);
+  let target;
+  try{target=fs.realpathSync.native(expected);}catch{throw new TaskEnvironmentError(`Expected repository is not accessible: ${expected}. Session repository: ${root}. No cross-repository delegation.`);}
+  if(path.relative(root,target))throw new TaskEnvironmentError(`Repository mismatch: task expects ${target}; session uses ${root}. Open a session in the expected repository.`);
+  return root;
+}
+function assertExpectedBase(env,actual) {
+  if(env.expectedBase&&env.expectedBase!==actual)throw new TaskEnvironmentError(`Baseline mismatch: task expects ${env.expectedBase}; checkout has ${actual}. Review the new baseline before dispatching again.`);
+}
+async function verifyWorkerEnvironment(j,root,signal) {
+  const env=j.spec.environment;
+  const checkout=fs.realpathSync.native(j.cwd);
+  const top=fs.realpathSync.native(await git(['rev-parse','--show-toplevel'],checkout));
+  const common=['rev-parse','--path-format=absolute','--git-common-dir'];
+  const [parentGit,workerGit,head]=await Promise.all([git(common,root),git(common,checkout),git(['rev-parse','HEAD'],checkout)]);
+  if(path.relative(checkout,top)||path.relative(fs.realpathSync.native(parentGit),fs.realpathSync.native(workerGit)))throw new TaskEnvironmentError('Worker checkout no longer belongs to the expected repository');
+  if(head!==j.base)throw new TaskEnvironmentError(`Worker checkout changed HEAD: expected ${j.base}; found ${head}`);
+  assertExpectedBase(env,head);
+  for(const file of env.requiredFiles){
+    signal.throwIfAborted();
+    const target=path.join(checkout,file);
+    try{
+      // Git may check out a committed symlink as plain text on Windows.
+      const entry=await git(['ls-tree','--full-tree',head,'--',`:(literal)${file}`],checkout);
+      if(!/^100(?:644|755) blob [a-f0-9]+\t/.test(entry)||path.relative(target,fs.realpathSync.native(target))||!fs.lstatSync(target).isFile())throw new Error();
+    }catch{throw new TaskEnvironmentError(`Required file ${file} is not a regular file present in worker baseline ${head}. Parent uncommitted files are not copied.`);}
+  }
+  let nodeVersion;
+  if(env.minNodeMajor!==undefined){
+    const result=await run('node',['--version'],{cwd:checkout,signal,timeoutMs:5000}).catch(()=>null);
+    signal.throwIfAborted();
+    const version=result?.code===0&&result.stdout.trim().match(/^v(\d+)\.\d+\.\d+(?:[-+][\w.+-]+)?$/);
+    if(!version||Number(version[1])<env.minNodeMajor)throw new TaskEnvironmentError(`Expected Node.js ${env.minNodeMajor}+ on worker PATH; found ${version?.[0]||'no usable node executable'}.`);
+    nodeVersion=version[0];
+  }
+  return {repoRoot:root,checkout,base:head,requiredFiles:env.requiredFiles,...(nodeVersion?{nodeVersion}:{})};
+}
+
 export function validateSpec(raw) {
   if(!raw||typeof raw!=='object')throw new Error('A detailed spec is required');
   const spec={
+    environment:validateEnvironment(raw.environment),
     title:text(raw.title,'title'),goal:text(raw.goal,'goal',12),
     context:text(raw.context,'context',12),kind:raw.kind||'implementation',
     requirements:textList(raw.requirements,'requirements'),
@@ -187,10 +242,14 @@ export class Coordinator {
     if(changes.mode==='off')for(const j of Object.values(this.state.jobs))if(['queued','waiting'].includes(j.status)){j.status='cancelled';j.reason='委派已关闭，未启动任务已取消。';}
     this.persist();this.pump();
   }
-  submit(raw,model=this.config.execModel){
+  async submit(raw,model=this.config.execModel,signal){
     if(this.closed||this.config.mode!=='auto')throw new Error('Delegation is off. The user must enable it with /delegation auto.');
     if(!model)throw new Error('Choose an execution model with /delegation exec provider/model.');
     const spec=validateSpec(raw);
+    const root=assertExpectedRepo(await git(['rev-parse','--show-toplevel'],this.cwd),spec.environment.expectedRepoRoot);
+    if(spec.environment.expectedBase)assertExpectedBase(spec.environment,await git(['rev-parse','HEAD'],root));
+    signal?.throwIfAborted();
+    if(this.closed||this.config.mode!=='auto')throw new Error('Delegation was disabled before submission');
     for(const dep of spec.dependencies)if(!this.state.jobs[dep])throw new Error(`Unknown dependency ${dep}`);
     const id='t-'+crypto.randomUUID().slice(0,8);
     const task={id,model,spec,specHash:crypto.createHash('sha256').update(JSON.stringify(spec)).digest('hex'),status:'queued',usage:blankUsage(),activeMs:0,createdAt:Date.now(),config:{thinking:this.config.execThinking,timeoutMs:this.config.taskTimeoutMs}};
@@ -243,10 +302,11 @@ export class Coordinator {
     if(action==='stop'){
       if(j.status==='reporting')throw new Error('A checkpoint report is pending; read it before deciding');
       if(!['running','queued','waiting','validating','paused'].includes(j.status))throw new Error('Task is no longer active');
-      this.cancel(id);return 'Stop requested; no further work is authorized.';
+      this.cancel(id,note?`Stopped by main agent: ${note}`:'Stopped by main agent');return 'Stop requested; no further work is authorized.';
     }
     if(action==='continue'){
       if(j.status!=='paused'||!note)throw new Error('Continue requires a paused task and an explicit bounded next step');
+      if(!j.spec.environment)throw new TaskEnvironmentError('This older task lacks a verified environment. Inspect partial work and submit a new task with the required environment.');
       j.pendingGuidance=note;j.status='queued';delete j.reason;this.persist();this.pump();return 'Continuation queued in the same worktree, with a new bounded work slice.';
     }
     if(action==='summary'){this.checkpoint(j,note||'Main model requested a progress report');return 'Ordinary work stopped. A checkpoint report will arrive for your decision.';}
@@ -261,16 +321,22 @@ export class Coordinator {
     const timeout=setTimeout(()=>{if(!signal.aborted&&j.status==='running')this.checkpoint(j,'Worker hit the work-slice deadline without a delivery');},Math.min(MAX_WORK_SLICE_MS,this.handoffAfterMs));timeout.unref();
     const progress=patch=>{if(!this.closed){Object.assign(j,patch,patch.usage?{usage:addUsage({...patch.usage},j.reportUsage)}:{});this.persist();}};
     try{
-      const root=await git(['rev-parse','--show-toplevel'],this.cwd);
+      if(!j.spec.environment)throw new TaskEnvironmentError('Task has no verified environment; submit a new task.');
+      const root=assertExpectedRepo(await git(['rev-parse','--show-toplevel'],this.cwd),j.spec.environment.expectedRepoRoot);
       if(!j.worktreeReady){
         j.base=await git(['rev-parse','HEAD'],root);
+        assertExpectedBase(j.spec.environment,j.base);
         j.branch=`pi-delegation/${j.id}`;
         j.cwd=path.join(path.dirname(root),path.basename(root)+'-pi-workers',j.id);
         fs.mkdirSync(path.dirname(j.cwd),{recursive:true});
         if(signal.aborted)throw new Error('Cancelled before worker start');
         await git(['worktree','add','-b',j.branch,j.cwd,j.base],root);j.worktreeReady=true;
       }
-      if(signal.aborted)throw new Error('Cancelled before worker start');
+      signal.throwIfAborted();
+      delete j.environment;
+      j.environment=await verifyWorkerEnvironment(j,root,signal);
+      signal.throwIfAborted();
+      this.persist();
       const result=await this.runner(j,{root,signal,control:a,onProgress:progress});
       if(signal.aborted)throw new Error(String(signal.reason||'Cancelled'));
       progress(result);clearTimeout(timeout);
@@ -289,7 +355,7 @@ export class Coordinator {
       await this.checkScope(j);
       signal.throwIfAborted();
       j.status='review';j.reason='执行检查已完成，等待主模型审查 diff、集成与验收。';
-    }catch(e){if(!a.checkpoint&&!this.closed){j.status=signal.aborted?'cancelled':'blocked';j.reason=String(signal.reason||e.message);}}
+    }catch(e){if(!a.checkpoint&&!this.closed){j.status=signal.aborted?'cancelled':'blocked';j.reason=String(signal.reason||e.message);if(!signal.aborted&&e instanceof TaskEnvironmentError)j.blockedBy='environment';}}
     finally{
       clearTimeout(timeout);clearTimeout(validationTimeout);
       if(a.checkpoint){await a.checkpoint;this.active.delete(j.id);if(!this.closed){this.persist();this.pump();}}
@@ -323,12 +389,12 @@ export class Coordinator {
     }else throw new Error('Unknown review decision');
     this.persist();this.pump();return j;
   }
-  cancel(id){
+  cancel(id,reason='Stopped by user'){
     const j=this.state.jobs[id];if(!j)throw new Error('Unknown task');
     if(['paused','reporting'].includes(j.status)||this.active.get(id)?.checkpoint){
-      j.status='cancelled';j.reason='检查点任务已停止。';this.active.get(id)?.reportAbort?.abort('Stopped');this.persist();this.pump();
-    }else if(this.active.has(id))this.active.get(id).controller.abort('Stopped by user');
-    else if(['queued','waiting'].includes(j.status)){j.status='cancelled';j.reason='用户取消';this.persist();this.pump();}
+      j.status='cancelled';j.reason=reason;this.active.get(id)?.reportAbort?.abort(reason);this.persist();this.pump();
+    }else if(this.active.has(id))this.active.get(id).controller.abort(reason);
+    else if(['queued','waiting'].includes(j.status)){j.status='cancelled';j.reason=reason;this.persist();this.pump();}
   }
   async wait(ids,timeoutMs=25000){
     const end=Date.now()+Math.min(30000,Math.max(0,timeoutMs));

@@ -69,7 +69,7 @@ test('plain directory asks for a URL, creates local baseline and runs a worker w
     },
   });
   try {
-    const j = c.submit({ title: 'Read baseline', goal: 'Explain the contents of the initial local file', context: 'This project was just initialized from a directory without Git.',
+    const j = await c.submit({ environment: { expectedRepoRoot: f.cwd, requiredFiles: ['hello.txt'] }, title: 'Read baseline', goal: 'Explain the contents of the initial local file', context: 'This project was just initialized from a directory without Git.',
       kind: 'analysis', requirements: ['Read hello.txt'], constraints: ['Read only'], allowedPaths: ['hello.txt'], acceptance: [{ description: 'Explain file', expected: 'File content explained' }] });
     await c.wait([j.id],5000);
     assert.equal(j.status,'review',j.reason);
