@@ -3,17 +3,21 @@ import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 export interface LocalRelease { webVersion: string; sdkVersion: string; buildId: string }
+export type RefreshAction = "restart" | "build-and-restart";
 export interface RefreshJob {
   id: string;
-  state: "checking" | "restarting" | "complete" | "rolled-back" | "failed";
+  action?: RefreshAction;
+  state: "building" | "checking" | "waiting-for-idle" | "restarting" | "complete" | "rolled-back" | "failed";
   startedAt: number;
   workerPid: number | null;
   finishedAt?: number;
   error?: string;
-  target: LocalRelease;
+  failure?: "build-failed" | "idle-timeout" | "check-failed";
+  target: LocalRelease | null;
 }
 export interface LocalRefreshStatus {
   available: boolean;
+  buildAvailable?: boolean;
   current: LocalRelease;
   instance: string | null;
   target: LocalRelease | null;
@@ -27,8 +31,8 @@ interface RuntimeHelper {
   gateActive(config: RuntimeConfig): boolean;
   readConfig(file: string): RuntimeConfig;
   readJob(config: RuntimeConfig): RefreshJob | null;
-  status(file: string): Pick<LocalRefreshStatus, "target" | "targetError" | "job">;
-  begin(file: string, pid: number, instance: string): RefreshJob;
+  status(file: string): Pick<LocalRefreshStatus, "target" | "targetError" | "job" | "buildAvailable">;
+  begin(file: string, pid: number, instance: string, action: RefreshAction): RefreshJob;
 }
 function runtime(): { helper: RuntimeHelper; file: string; config: RuntimeConfig } | null {
   const file = process.env.PI_WEB_LOCAL_REFRESH_CONFIG;
@@ -59,10 +63,13 @@ function readBuildId(): string {
   try { return readFileSync(path.join(process.cwd(), ".next/BUILD_ID"), "utf8").trim(); }
   catch { return "development"; }
 }
-export function beginLocalRefresh(): RefreshJob {
+export function beginLocalRefresh(action: RefreshAction = "restart"): RefreshJob {
   const configured = runtime();
   if (!configured || !process.env.PI_WEB_RUNTIME_INSTANCE) throw Object.assign(new Error("Local refresh is not configured"), { status: 409 });
-  return configured.helper.begin(configured.file, process.pid, process.env.PI_WEB_RUNTIME_INSTANCE);
+  if (action === "build-and-restart" && !configured.helper.status(configured.file).buildAvailable) {
+    throw Object.assign(new Error("Local source build is not configured"), { status: 409 });
+  }
+  return configured.helper.begin(configured.file, process.pid, process.env.PI_WEB_RUNTIME_INSTANCE, action);
 }
 export function authorizeRefreshWorker(token: string | null, id: unknown, instance: unknown): RuntimeConfig {
   const configured = runtime();

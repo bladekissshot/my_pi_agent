@@ -28,7 +28,9 @@ import {
   replaceUploadFile,
   validateUploadFileNames,
 } from "@/lib/file-upload";
-import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import { parseFormDataWithinLimit, readBodyWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
+import { getMarkdownEdit, MarkdownEditError, saveMarkdownEdit } from "@/lib/markdown-edit-file";
+import { MARKDOWN_EDIT_MAX_BYTES } from "@/lib/markdown-edit";
 import { filePathFromApiSegments, samePath } from "@/lib/paths";
 import { hasParentDirectorySegment } from "@/lib/path-security";
 import { readTextPreviewChunk } from "@/lib/text-preview";
@@ -36,7 +38,7 @@ import { registerFileWatch } from "@/lib/file-watch-registry";
 import { FILE_WATCH_HEARTBEAT_MS } from "@/lib/file-version";
 import { pageStreamLabel, registerPageStream } from "@/lib/page-stream-registry";
 
-const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
+const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch", "edit"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
 const FILE_REQUEST_TYPE_SET = new Set<string>(FILE_REQUEST_TYPES);
 // One limit for a request's files together; a single file may use all of it.
@@ -152,6 +154,41 @@ function parseUploadFileNames(value: unknown): string[] | null {
   return value;
 }
 
+async function handleMarkdownEdit(request: NextRequest, filePath: string): Promise<NextResponse> {
+  try {
+    const roots = await getAllowedFileRoots();
+    // Chat references outside these roots only grant read access, not an edit snapshot or a write.
+    if (request.method !== "POST") {
+      return NextResponse.json(getMarkdownEdit(filePath, roots), { headers: { "Cache-Control": "no-store" } });
+    }
+    const expected = request.headers.get("if-match");
+    if (!expected) return NextResponse.json({ error: "If-Match is required" }, { status: 428 });
+    if (!/^"[a-f0-9]{64}"$/.test(expected)) {
+      return NextResponse.json({ error: "Invalid If-Match version" }, { status: 400 });
+    }
+    const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== "text/plain") {
+      return NextResponse.json({ error: "Content-Type must be text/plain" }, { status: 415 });
+    }
+    const body = await readBodyWithinLimit(request, MARKDOWN_EDIT_MAX_BYTES);
+    return NextResponse.json(saveMarkdownEdit(filePath, roots, expected, new Uint8Array(await body.arrayBuffer())));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: "Markdown editing is limited to 256 KiB" }, { status: 413 });
+    }
+    if (error instanceof MarkdownEditError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+    if (["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      return NextResponse.json({ error: "Permission denied" }, { status: 403 });
+    }
+    return NextResponse.json({ error: "Markdown edit failed" }, { status: 500 });
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
@@ -164,6 +201,7 @@ export async function POST(
     const { path: segments } = await params;
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
     if (type === "allow-link") return allowLinkedDirectory(request, segments);
+    if (type === "edit") return handleMarkdownEdit(request, filePathFromApiSegments(segments));
 
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
@@ -469,6 +507,7 @@ export async function GET(
     if (!type) {
       return NextResponse.json({ error: "Invalid file request type" }, { status: 400 });
     }
+    if (type === "edit") return handleMarkdownEdit(request, filePath);
     const sessionId = request.nextUrl.searchParams.get("sessionId");
 
     const allowedRoots = await getAllowedFileRoots();

@@ -1,6 +1,9 @@
 # Pi Web 一次性本地刷新
 
-入口：**设置 → 应用 → 检查本地版本并重启**。它不是浏览器 F5，也不下载上游、修改模型或运行 `npm update`；它切换到管理员已登记、已构建的本地 Pi Web/SDK。
+入口：**设置 → 应用**。
+
+- **检查本地版本并重启**：直接使用已登记的构建，不编译源码。
+- **构建并重启本地版**：从预先配置的本地 Git 工作区取快照（包括合格的未提交和未跟踪源码），在独立发布目录构建 Pi SDK/Pi Web，成功后通过同一套检查、重启和回滚流程。构建期间旧服务可继续使用；验证通过后，最多等待 15 分钟让任务和终端退出。失败不会覆盖当前版本。两个按钮都不下载上游版本，不修改模型或提交 Git。源码构建会从锁文件安装依赖；有本机制生成的运行版本且 Pi SDK 源码和构建输入不变时，只复制上次已验证的 SDK 产物，不重新编译 SDK。
 
 ## 流程与进程寿命
 
@@ -24,19 +27,23 @@
 & 'C:\path\to\checkout\scripts\Install-PiWebLocalRefresh.ps1' `
     -InstallRoot 'C:\path\to\pi-agent' `
     -ReleaseRoot 'C:\path\to\built\projects\pi-web' `
-    -TargetRoot 'C:\path\to\built\projects\pi-web'
+    -TargetRoot 'C:\path\to\built\projects\pi-web' `
+    -SourceRoot 'C:\path\to\trusted-monorepo' `
+    -ReleaseStore 'C:\path\to\local-releases'
 ```
 
 安装器核对构建后，备份已有 `bin/pi-web-launch.cjs` 和管理配置，安装无依赖辅助脚本，写入 `<agentDir>/pi-web-runtime/runtime.json`。**安装器不重启或启动任何服务**。第一次启用需要在任务结束后，用外部终端停止服务，再打开桌面快捷方式；之后即可使用应用 tab。
 
 默认 agentDir 为 `<InstallRoot>/agent`；默认端口 30141。可通过 `-AgentDir`、`-WorkspaceRoot`、`-Port` 覆盖；已有 `pi-web-local.json` 的默认工作目录会保留。环境和桌面启动仍沿用现有安装的脚本，不改变凭证、模型网关、会话或插件设置。
 
-以后有新构建时，在运行时 JSON 中将 `targetRoot` 指向它。`activeRoot` 是当前启动使用的构建，只由成功刷新更新。要重启相同构建，两者可以相同。浏览器不能提交任意路径、命令或 Git 分支。
+`-SourceRoot` 可选，只能指向你信任、允许执行其中构建脚本的 Pi monorepo；省略时只启用原来的快速重启。`-ReleaseStore` 默认是该仓库的 `.local/releases`。已有安装首次升级时，用原 `activeRoot` 作为 `-ReleaseRoot`、含新版设置页的独立构建作为 `-TargetRoot`，再用旧页的「检查本地版本并重启」切换一次。以后用「构建并重启本地版」即可，不再手动修改 `targetRoot`。
+
+`activeRoot` 是当前构建，`targetRoot` 是快速重启的目标。源码构建成功且服务通过健康检查后，两者指向新发布目录；切换失败会恢复原指针。浏览器不能提交路径、命令、Git 分支或环境变量。设置页显示 Build ID，版本号没变也能区分构建。构建日志为 `<agentDir>/pi-web-runtime/build.log`，重启日志为 `refresh.log`。清理历史发布目录前，确认它不再是当前、目标或需要的回滚版本。
 
 ## 保护与限制
 
 - 仅本机 loopback 页面可用；沿用 Pi Web 的浏览器认证，并拒绝跨来源请求。工作进程的 drain/shutdown 请求还需要随机内部令牌和相同操作/实例 ID，令牌不发给页面，也不传给项目命令和终端。
-- 重复点击使用文件系统锁拒绝。服务有运行中的会话、变更命令、启动、扩展对话框、子 Agent、插件后台工作或活动终端时拒绝；检查期间变忙也不强制重启。
+- 两个按钮共用一把文件系统锁。服务有运行中的会话、变更命令、启动、扩展对话框、子 Agent、插件后台工作或活动终端时，快速重启会拒绝；源码构建可以先完成，但只有通过相同的空闲检查才切换。
 - 所有页面会短暂断开；已保存会话继续保留，未发送草稿依赖浏览器已有草稿持久化。请先结束上传、设置保存和其他文件操作，不要把“重启”当作取消操作的按钮。
 - 临时检查实例和更新服务都会占用短时间的额外内存/CPU。没有编译或在线下载，不会因为点击进入长时间构建。
 - 操作日志和指针备份在 `<agentDir>/pi-web-runtime/`。数据不提交 Git。未通过健康检查的版本不标为成功。
@@ -52,6 +59,8 @@ npm run test:tooling
 
 ```powershell
 $env:PLAYWRIGHT_CHANNEL = 'chrome' # 或使用已安装的 Playwright Chromium
+node projects/pi-web/e2e/local-refresh.mjs
+$env:E2E_LOCAL_BUILD = '1' # 重跑，验证新的源码构建按钮
 node projects/pi-web/e2e/local-refresh.mjs
 ```
 

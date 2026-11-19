@@ -1987,6 +1987,43 @@ pre, code {
   filter: brightness(1.08);
 }
 
+.markdown-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.markdown-editor[hidden] { display: none; }
+.markdown-editor-host { flex: 1; min-height: 0; min-width: 0; }
+
+.markdown-editor-bar,
+.markdown-editor-error {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.markdown-editor-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.markdown-editor-bar .file-viewer-mode-button {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.markdown-editor-bar .file-viewer-mode-button:disabled { opacity: 0.5; cursor: default; }
+.markdown-editor-error { color: var(--text); background: var(--bg-selected); }
+
 .file-viewer-load-more {
   position: absolute;
   z-index: 2;

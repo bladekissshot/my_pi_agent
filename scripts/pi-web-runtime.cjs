@@ -24,6 +24,9 @@ function readConfig(file) {
   }
   if (!Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) throw new Error('Invalid local runtime port');
   if (config.workspaceRoot && !path.isAbsolute(config.workspaceRoot)) throw new Error('Invalid workspace root');
+  if (Boolean(config.sourceRoot) !== Boolean(config.releaseStore) || [config.sourceRoot, config.releaseStore].some(value => value !== undefined && (typeof value !== 'string' || !path.isAbsolute(value)))) {
+    throw new Error('Local source build requires absolute sourceRoot and releaseStore');
+  }
   return config;
 }
 function inspectRelease(root) {
@@ -76,19 +79,28 @@ function status(file) {
     fs.rmSync(path.join(config.stateDir, 'refresh.lock'), { recursive: true, force: true });
   }
   // Only public version metadata goes to the browser, never paths or credentials.
-  return { target: target && { webVersion: target.webVersion, sdkVersion: target.sdkVersion, buildId: target.buildId }, targetError, job };
+  return { target: target && releaseInfo(target), targetError, job, buildAvailable: canBuild(config) };
 }
-function begin(file, oldPid, instance) {
+function releaseInfo({ webVersion, sdkVersion, buildId }) {
+  return { webVersion, sdkVersion, buildId };
+}
+function canBuild(config) {
+  return Boolean(config.sourceRoot && config.releaseStore && fs.existsSync(path.join(config.sourceRoot, 'scripts', 'task.mjs'))
+    && fs.existsSync(path.join(path.dirname(config.helperPath), 'pi-web-build.cjs')));
+}
+function begin(file, oldPid, instance, action = 'restart') {
   const config = readConfig(file);
-  const target = inspectRelease(config.targetRoot);
+  const building = action === 'build-and-restart';
+  if (!building && action !== 'restart') throw new Error('Invalid local refresh action');
+  if (building && !canBuild(config)) throw Object.assign(new Error('Local source build is not configured'), { status: 409 });
+  const target = building ? null : releaseInfo(inspectRelease(config.targetRoot));
   fs.mkdirSync(config.stateDir, { recursive: true });
   const lock = path.join(config.stateDir, 'refresh.lock');
   try { fs.mkdirSync(lock); } catch (error) {
     if (error.code === 'EEXIST') throw Object.assign(new Error('A local refresh is already in progress'), { status: 409 });
     throw error;
   }
-  const job = { id: crypto.randomUUID(), state: 'checking', startedAt: Date.now(), workerPid: null,
-    target: { webVersion: target.webVersion, sdkVersion: target.sdkVersion, buildId: target.buildId } };
+  const job = { id: crypto.randomUUID(), action, state: building ? 'building' : 'checking', startedAt: Date.now(), workerPid: null, target };
   try {
     atomicJson(path.join(config.stateDir, 'refresh.json'), job);
     const child = spawn(process.execPath, [config.helperPath, 'refresh', file, job.id, String(oldPid), instance], {
@@ -233,10 +245,15 @@ async function waitGone(pid) {
 async function refresh(file, id, oldPid, instance, hooks = {}) {
   const config = readConfig(file);
   const oldJob = readJob(config);
-  if (oldJob?.id !== id || oldJob.state !== 'checking' || !Number.isSafeInteger(oldPid) || oldPid <= 0 || !instance) throw new Error('Invalid refresh operation');
+  const building = oldJob?.action === 'build-and-restart';
+  if (oldJob?.id !== id || oldJob.state !== (building ? 'building' : 'checking') || !Number.isSafeInteger(oldPid) || oldPid <= 0 || !instance) throw new Error('Invalid refresh operation');
   // Let the initiating POST finish and record the helper PID before any action.
   await pause(hooks.delayMs ?? 300);
-  const update = (state, extra = {}) => atomicJson(path.join(config.stateDir, 'refresh.json'), { ...oldJob, workerPid: process.pid, state, ...extra });
+  let currentJob = oldJob;
+  const update = (state, extra = {}) => {
+    currentJob = { ...currentJob, workerPid: process.pid, state, ...extra };
+    atomicJson(path.join(config.stateDir, 'refresh.json'), currentJob);
+  };
   const log = path.join(config.stateDir, 'refresh.log');
   let preview, replacement, draining = false, stopped = false;
   const ops = { freePort, startNext, ready, stopChild, waitGone, kill: pid => process.kill(pid), ...hooks };
@@ -247,34 +264,52 @@ async function refresh(file, id, oldPid, instance, hooks = {}) {
     const response = await fetch(`http://127.0.0.1:${config.port}/api/local-refresh`, { method: 'POST', headers,
       body: JSON.stringify({ action, id, instance }), signal: AbortSignal.timeout(30000) });
     const data = await response.json();
+    if (response.status === 409 && action === 'drain') throw Object.assign(new Error('The runtime is busy'), { code: 'BUSY' });
     if (!response.ok || data.pid !== oldPid || data.instance !== instance) throw new Error('Runtime changed or is busy; restart was refused');
     return data;
   });
   try {
-    target = inspectRelease(config.targetRoot);
     previous = inspectRelease(config.activeRoot);
-    update('checking');
+    let targetRoot = config.targetRoot;
+    if (building) {
+      if (!canBuild(config) && !hooks.buildLocalRelease) throw new Error('Local source build is not configured');
+      const build = hooks.buildLocalRelease ?? require('./pi-web-build.cjs').buildLocalRelease;
+      ({ root: targetRoot } = await build({ sourceRoot: config.sourceRoot, releaseStore: config.releaseStore,
+        jobId: id, env: process.env, log: path.join(config.stateDir, 'build.log'), activeRoot: config.activeRoot }));
+    }
+    target = inspectRelease(targetRoot);
+    update('checking', { target: releaseInfo(target) });
     const port = await ops.freePort();
     const probeInstance = crypto.randomUUID();
     const probeEnv = environment(config, file, probeInstance);
     probeEnv.PI_CODING_AGENT_DIR = path.join(config.stateDir, 'probe', id);
     delete probeEnv.PI_WEB_PASSWORD;
     delete probeEnv.PI_WEB_LOCAL_REFRESH_CONFIG;
-    preview = await ops.startNext(config.targetRoot, port, probeEnv, log);
+    preview = await ops.startNext(targetRoot, port, probeEnv, log);
     await ops.ready(preview, port, target, probeInstance);
     await ops.stopChild(preview); preview = null;
-    // The service sets an admission gate and checks all jobs again before shutdown.
+    // Compilation is allowed while working. Only the existing admission gate
+    // can authorize cutover; wait a bounded time if the service is still busy.
+    const idleDeadline = Date.now() + (hooks.idleTimeoutMs ?? 15 * 60_000);
+    while (true) {
+      try { await call('drain'); draining = true; break; }
+      catch (error) {
+        if (!building || error.code !== 'BUSY') throw error;
+        if (Date.now() >= idleDeadline) throw Object.assign(new Error('Timed out waiting for the runtime to become idle'), { code: 'IDLE_TIMEOUT' });
+        if (currentJob.state !== 'waiting-for-idle') update('waiting-for-idle');
+        await (hooks.pause ?? pause)(2000);
+      }
+    }
     update('restarting');
-    await call('drain'); draining = true;
     await call('shutdown');
     atomicJson(path.join(config.stateDir, 'config.before-refresh.json'), config);
     ops.kill(oldPid); stopped = true;
     await ops.waitGone(oldPid);
-    atomicJson(file, { ...config, activeRoot: config.targetRoot });
+    atomicJson(file, { ...config, activeRoot: targetRoot, targetRoot });
     const nextInstance = crypto.randomUUID();
     const nextEnv = environment(config, file, nextInstance);
     // Loopback health checks authenticate when browser password login is enabled.
-    replacement = await ops.startNext(config.targetRoot, config.port, nextEnv, log);
+    replacement = await ops.startNext(targetRoot, config.port, nextEnv, log);
     await ops.ready(replacement, config.port, target, nextInstance);
     replacement.unref();
     update('complete', { finishedAt: Date.now() });
@@ -296,7 +331,8 @@ async function refresh(file, id, oldPid, instance, hooks = {}) {
         update('failed', { error: 'Restart and rollback failed; see the local refresh log', finishedAt: Date.now() });
       }
     } else {
-      update('failed', { error: 'Local version check failed or the service became busy; current version was not changed', finishedAt: Date.now() });
+      const failure = currentJob.state === 'building' ? 'build-failed' : error.code === 'IDLE_TIMEOUT' ? 'idle-timeout' : 'check-failed';
+      update('failed', { failure, error: 'Local build or restart failed; the current version was not changed', finishedAt: Date.now() });
     }
   } finally {
     if (draining && !stopped) await call('cancel').catch(() => {});

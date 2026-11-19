@@ -42,9 +42,12 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as { action?: string; id?: string; instance?: string };
     if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "JSON object required" }, { status: 400 });
-    if (body.action === "restart") {
-      if (blockers() > 0) throw Object.assign(new Error("Close running tasks and terminals before restarting"), { status: 409 });
-      return NextResponse.json({ job: beginLocalRefresh() }, { status: 202 });
+    if (body.action === "restart" || body.action === "build-and-restart") {
+      if (Object.keys(body).some((key) => key !== "action")) return NextResponse.json({ error: "Unexpected operation parameters" }, { status: 400 });
+      if (body.action === "restart" && blockers() > 0) {
+        throw Object.assign(new Error("Close running tasks and terminals before restarting"), { status: 409 });
+      }
+      return NextResponse.json({ job: beginLocalRefresh(body.action) }, { status: 202 });
     }
     if (!["drain", "shutdown", "cancel"].includes(body.action ?? "")) return NextResponse.json({ error: "Unknown operation" }, { status: 400 });
     const config = authorizeRefreshWorker(request.headers.get("x-pi-refresh-token"), body.id, body.instance);

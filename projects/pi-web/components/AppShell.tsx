@@ -8,6 +8,7 @@ import { ChatWindow } from "./ChatWindow";
 import { NewSessionContextBar, type NewSessionContextControl } from "./NewSessionContextBar";
 import type { ChatScrollPosition } from "@/lib/chat-scroll-position";
 import { FileViewer } from "./FileViewer";
+import type { MarkdownEditSession } from "./MarkdownEditor";
 import { TabBar, type Tab } from "./TabBar";
 import { movePanelTab, orderPanelTabs } from "@/lib/panel-tab-order";
 import { openFileTab, saveFileViewerState, saveParkedFileViewerState, switchFileWorkspace, type ParkedFileWorkspace } from "./file-tab-state";
@@ -609,6 +610,20 @@ export function AppShell() {
 
   // Files unmount when inactive; workspace terminals stay mounted until closed.
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
+  const [markdownEdits] = useState(() => new Map<string, MarkdownEditSession>());
+  const handleFileSaved = useCallback(() => setExplorerRefreshKey((key) => key + 1), []);
+  useEffect(() => {
+    const warnAboutDrafts = (event: BeforeUnloadEvent) => {
+      for (const draft of markdownEdits.values()) {
+        if (!draft.dirty && !draft.saving) continue;
+        event.preventDefault();
+        event.returnValue = true;
+        break;
+      }
+    };
+    window.addEventListener("beforeunload", warnAboutDrafts);
+    return () => window.removeEventListener("beforeunload", warnAboutDrafts);
+  }, [markdownEdits]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
   const fileWorkspaceStatesRef = useRef(new Map<string, ParkedFileWorkspace>());
   // Bumped on every workspace switch. The active viewer reports its state as
@@ -1474,6 +1489,12 @@ export function AppShell() {
       if (fileTabs.length === 0 && terminalTabs.length === 0 && remainingAgents.length === 0) setRightPanelOpen(false);
       return;
     }
+    const filePath = fileTabs.find((tab) => tab.id === tabId)?.filePath;
+    if (filePath) {
+      const draft = markdownEdits.get(filePath);
+      if (draft?.dirty && !window.confirm(translate("files.markdownDiscard"))) return;
+      markdownEdits.delete(filePath);
+    }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
       if (next.length === 0 && terminalTabs.length === 0 && agentTabs.length === 0) setRightPanelOpen(false);
@@ -1484,7 +1505,7 @@ export function AppShell() {
       const remaining = fileTabs.filter((t) => t.id !== tabId);
       return remaining.at(-1)?.id ?? terminalTabs.at(-1)?.id ?? lastAgentTabId(agentTabs);
     });
-  }, [fileTabs, terminalTabs, agentTabs]);
+  }, [fileTabs, terminalTabs, agentTabs, markdownEdits, translate]);
 
   // An extension's ctx.shutdown() ended the session's runtime, as pi quits: leave it the
   // way a deleted session is left (the refreshed list shows whether its file remains).
@@ -3128,6 +3149,8 @@ export function AppShell() {
               cwd={activeCwd ?? undefined}
               sourceSessionId={activeFileTab.sourceSessionId}
               gitRefreshKey={explorerRefreshKey}
+              markdownEdits={markdownEdits}
+              onFileSaved={handleFileSaved}
               initialDisplayMode={activeFileTab.initialDisplayMode}
               initialPage={activeFileTab.page}
               initialState={activeFileTab.viewerState}

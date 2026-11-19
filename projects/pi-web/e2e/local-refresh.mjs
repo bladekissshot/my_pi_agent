@@ -1,7 +1,7 @@
 // Monorepo-only production check: real page click and real one-shot process exit.
 // All runtime data uses a private fixture directory; no model is prompted.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,6 +22,31 @@ const reservation = net.createServer(); reservation.listen(0, '127.0.0.1'); awai
 const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
 const file = path.join(testDir, 'runtime.json');
 const config = { activeRoot: web, targetRoot: web, stateDir: path.join(testDir, 'state'), agentDir: path.join(testDir, 'agent'), workspaceRoot: path.join(testDir, 'project'), helperPath, port };
+const testBuild = process.env.E2E_LOCAL_BUILD === '1';
+if (testBuild) {
+  // Use a tiny trusted checkout so this test exercises a real snapshot, worker,
+  // registration and cutover without installing dependencies in every E2E run.
+  config.sourceRoot = path.join(testDir, 'source');
+  config.releaseStore = path.join(testDir, 'releases');
+  for (const [name, body] of Object.entries({
+    'projects/pi/package-lock.json': '{}',
+    'projects/pi-web/package-lock.json': '{}',
+    'projects/pi-web/bin/prepare-terminal.js': '// fixture',
+    'scripts/task.mjs': `import fs from 'node:fs'; import path from 'node:path';
+      if (process.argv[2] === 'build-web') {
+        const old = ${JSON.stringify(web)};
+        for (const name of ['.next', 'bin', 'public', 'package.json', 'next.config.ts']) {
+          fs.cpSync(path.join(old, name), path.join('projects/pi-web', name), { recursive: true, filter: file => !['cache','dev'].includes(path.basename(file)) });
+        }
+        fs.symlinkSync(path.join(old, 'node_modules'), path.resolve('projects/pi-web/node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+      }`,
+  })) {
+    const target = path.join(config.sourceRoot, name);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, body);
+  }
+  execFileSync('git', ['init', '-q'], { cwd: config.sourceRoot, windowsHide: true });
+}
 helper.atomicJson(file, config);
 const logs = await fs.open(path.join(testDir, 'server.log'), 'a');
 const env = { ...process.env, PI_WEB_PASSWORD: '', PI_WEB_SKIP_VERSION_CHECK: '1' };
@@ -51,12 +76,13 @@ try {
   await page.goto(`http://127.0.0.1:${port}/?cwd=${encodeURIComponent(config.workspaceRoot)}`);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('button', { name: 'Application', exact: true }).click();
-  const button = page.getByRole('button', { name: 'Check local build and restart', exact: true });
+  const label = testBuild ? 'Build and restart local version' : 'Check local build and restart';
+  const button = page.getByRole('button', { name: label, exact: true });
   await button.waitFor();
-  await page.waitForFunction(() => {
-    const button = [...document.querySelectorAll('button')].find(button => button.textContent === 'Check local build and restart');
+  await page.waitForFunction((name) => {
+    const button = [...document.querySelectorAll('button')].find(button => button.textContent === name);
     return button && !button.disabled;
-  });
+  }, label);
   assert.equal(await button.isEnabled(), true);
   assert.equal(helper.readJob(config), null, 'opening the tab starts no helper');
   page.once('dialog', dialog => dialog.accept());
@@ -64,12 +90,19 @@ try {
   const response = await fetch(`http://127.0.0.1:${port}/api/local-refresh`);
   const next = await response.json();
   assert.equal(next.job.state, 'complete', JSON.stringify(next));
+  if (testBuild) {
+    assert.equal(next.job.action, 'build-and-restart');
+    const registered = helper.readConfig(file);
+    assert.ok(registered.activeRoot.startsWith(config.releaseStore + path.sep));
+    assert.equal(registered.activeRoot, registered.targetRoot);
+    assert.notEqual(registered.activeRoot, web);
+  }
   assert.notEqual(next.instance, originalInstance, 'even a same-version restart must prove the instance changed');
   await new Promise(resolve => setTimeout(resolve, 500));
   assert.throws(() => process.kill(next.job.workerPid, 0), 'no management helper may stay alive');
   assert.equal(helper.gateActive(config), false);
   assert.deepEqual(errors, []);
-  const result = { result: 'PASS', scenario: 'settings click, isolated probe, runtime restart, automatic page reload, helper exit', current: next.current, workerExited: true };
+  const result = { result: 'PASS', scenario: `settings click, ${testBuild ? 'source snapshot, build, ' : ''}isolated probe, runtime restart, automatic page reload, helper exit`, current: next.current, workerExited: true };
   await fs.writeFile(new URL('result.json', artifacts), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } finally {

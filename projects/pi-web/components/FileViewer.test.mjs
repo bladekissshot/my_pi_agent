@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import ts from "typescript";
 
-const source = await readFile(new URL("./FileViewer.tsx", import.meta.url), "utf8");
+const source = (await readFile(new URL("./FileViewer.tsx", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 
 test("lightweight source rows are skipped for highlighted, diff, and preview views", () => {
   // Execute the source-view calculations without mounting the file-fetching component.
@@ -66,9 +66,8 @@ test("the diff view wraps when the viewer wraps, and the key reaches the diff", 
   assert.match(diffView, /padding: "0 6px",[\s\S]{0,160}flexShrink: 0/);
   assert.match(source, /<MemoizedDiffView[\s\S]{0,200}patch=\{gitDiff\.patch!\}[\s\S]{0,200}wrapLines=\{wrapLines\}[\s\S]{0,200}language=\{language\}[\s\S]{0,200}prismReady=\{prismReady\}[\s\S]{0,200}isDark=\{isDark\}[\s\S]{0,200}\/>/);
 
-  // The wrap control is offered for the diff as well as the source, never for a
-  // rendered preview (markdown, HTML, table), where there are no lines to wrap.
-  assert.match(source, /\(effectiveDisplayMode === "source" \|\| effectiveDisplayMode === "diff"\) && !isBinary/);
+  // Wrap belongs to the editor, source and diff, never to the rendered preview.
+  assert.match(source, /\(editing \|\| effectiveDisplayMode === "source" \|\| effectiveDisplayMode === "diff"\) && !isBinary/);
 });
 
 test("a highlighted diff line keeps the row's line box, wrap and background", () => {

@@ -1,6 +1,9 @@
 "use client";
 
 import { memo, useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent } from "react";
+import dynamic from "next/dynamic";
+import type { MarkdownEditSession } from "./MarkdownEditor";
+import { isMarkdownEditPath, MARKDOWN_EDIT_MAX_BYTES } from "@/lib/markdown-edit";
 import type { SyntaxHighlighterProps } from "react-syntax-highlighter";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
 import renderSyntaxNode from "react-syntax-highlighter/dist/esm/create-element";
@@ -42,6 +45,8 @@ import {
 
 export type { FileViewerState } from "@/lib/file-viewer-state";
 
+const MarkdownEditor = dynamic(() => import("./MarkdownEditor"), { ssr: false });
+
 interface Props {
   filePath: string;
   cwd?: string;
@@ -57,6 +62,8 @@ interface Props {
   initialState?: FileViewerState;
   onStateChange?: (state: FileViewerState) => void;
   watchEnabled?: boolean;
+  markdownEdits?: Map<string, MarkdownEditSession>;
+  onFileSaved?: () => void;
 }
 
 interface FileData {
@@ -1293,6 +1300,8 @@ export function FileViewer({
   initialPage,
   onStateChange,
   watchEnabled: watchRequested = true,
+  markdownEdits,
+  onFileSaved,
 }: Props) {
   // A page hidden past the grace lets go of its file watch (#1283: one browser
   // connection each); the watch's `connected` on return re-reads the file if it
@@ -1324,6 +1333,8 @@ export function FileViewer({
       initialState={initialState}
       onStateChange={onStateChange}
       watchEnabled={watchEnabled}
+      markdownEdits={markdownEdits}
+      onFileSaved={onFileSaved}
     />
   );
 }
@@ -1340,6 +1351,8 @@ function TextFileViewer({
   initialState,
   onStateChange,
   watchEnabled = true,
+  markdownEdits,
+  onFileSaved,
 }: Props) {
   const { isDark } = useTheme();
   const { t } = useI18n();
@@ -1355,6 +1368,9 @@ function TextFileViewer({
   const initialScrollTop = initialState?.scrollTop ?? 0;
   const initialScrollLeft = initialState?.scrollLeft ?? 0;
   const [displayMode, setDisplayMode] = useState<DisplayMode>(requestedInitialDisplayMode);
+  const [editorOpened, setEditorOpened] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(() => markdownEdits?.get(filePath)?.dirty ?? false);
   const [wrapLines, setWrapLines] = useState(initialWrapLines);
   const [watching, setWatching] = useState(false);
   const [watchAttempt, superviseWatch] = useWatchRecovery();
@@ -1556,8 +1572,16 @@ function TextFileViewer({
     void fetchGitDiff(filePath);
   }, [fetchGitDiff, filePath, gitRefreshKey]);
 
+  const refreshAfterSave = useCallback(() => {
+    void fetchContent(filePath);
+    if (onFileSaved) onFileSaved();
+    else void fetchGitDiff(filePath);
+  }, [fetchContent, fetchGitDiff, filePath, onFileSaved]);
+
   const isBinary = data?.binary === true;
   const isDelimitedTable = !isBinary && isDelimitedTablePath(filePath);
+  const canEdit = !!markdownEdits && isMarkdownEditPath(filePath)
+    && (editorOpened || editorDirty || (!!data && !data.binary && data.size <= MARKDOWN_EDIT_MAX_BYTES));
 
   useEffect(() => {
     // HTML gets the same rendered-first treatment as markdown: a generated page
@@ -1805,7 +1829,7 @@ function TextFileViewer({
     );
   }
 
-  if (error && !isDeletedDiff) {
+  if (error && !isDeletedDiff && !canEdit) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#f87171", fontSize: 13 }}>
         {error}
@@ -1813,7 +1837,7 @@ function TextFileViewer({
     );
   }
 
-  if (!data && !isDeletedDiff) return null;
+  if (!data && !isDeletedDiff && !canEdit) return null;
 
   const content = viewerContent;
   const markdownDirectory = getFileDirectory(filePath);
@@ -1825,7 +1849,7 @@ function TextFileViewer({
         ...(hasPreview ? ["preview" as const] : []),
         ...(hasGitDiff ? ["diff" as const] : []),
       ];
-  const metadata = isDeletedDiff
+  const metadata = isDeletedDiff || !data
     ? t("files.deleted")
     : isBinary
       ? `${t("files.binary")} · ${formatSize(data!.size)}`
@@ -1865,15 +1889,15 @@ function TextFileViewer({
         )}
 
         <div className="file-viewer-controls">
-          {displayModes.length > 1 && (
+          {(displayModes.length > 1 || canEdit) && (
             <div className="file-viewer-mode-switch" aria-label={t("i18n.fileViewMode")}>
               {displayModes.map((mode) => {
-                const active = effectiveDisplayMode === mode;
+                const active = !editing && effectiveDisplayMode === mode;
                 return (
                   <button
                     key={mode}
                     type="button"
-                    onClick={() => updateDisplayMode(mode)}
+                    onClick={() => { setEditing(false); updateDisplayMode(mode); }}
                     title={mode === "diff" ? t("i18n.compareHead") : undefined}
                     aria-pressed={active}
                     className="file-viewer-mode-button"
@@ -1886,6 +1910,14 @@ function TextFileViewer({
                   </button>
                 );
               })}
+              {canEdit && (
+                <button type="button" className="file-viewer-mode-button" aria-pressed={editing}
+                  title={editorDirty ? t("files.markdownUnsaved") : undefined}
+                  onClick={() => { setEditorOpened(true); setEditing(true); }}
+                  style={{ background: editing ? "var(--bg-selected)" : "transparent", color: editing ? "var(--text)" : "var(--text-muted)" }}>
+                  {t("files.markdownEdit")}{editorDirty ? " •" : ""}
+                </button>
+              )}
             </div>
           )}
 
@@ -1916,7 +1948,7 @@ function TextFileViewer({
                 <MentionIcon />
               </button>
             )}
-            {(effectiveDisplayMode === "source" || effectiveDisplayMode === "diff") && !isBinary && (
+            {(editing || effectiveDisplayMode === "source" || effectiveDisplayMode === "diff") && !isBinary && (
               <>
                 <button
                   type="button"
@@ -1945,7 +1977,7 @@ function TextFileViewer({
         </div>
       </div>
 
-      {showLoadMore && data?.truncated && (
+      {!editing && showLoadMore && data?.truncated && (
         <div
           className="file-viewer-load-more"
           style={{
@@ -1975,7 +2007,18 @@ function TextFileViewer({
         </div>
       )}
 
-      {/* Content area */}
+      {editorOpened && markdownEdits && (
+        <MarkdownEditor
+          filePath={filePath}
+          sessions={markdownEdits}
+          visible={editing}
+          isDark={isDark}
+          wrapLines={wrapLines}
+          onDirtyChange={setEditorDirty}
+          onSaved={refreshAfterSave}
+        />
+      )}
+      {/* Keep the viewer's scroll position while editing. Preview/Diff show the saved file. */}
       <div
         ref={contentRef}
         className="file-viewer-content"
@@ -1983,7 +2026,7 @@ function TextFileViewer({
           viewerStateRef.current.scrollTop = event.currentTarget.scrollTop;
           viewerStateRef.current.scrollLeft = event.currentTarget.scrollLeft;
         }}
-        style={{ flex: 1, overflow: "auto", background: "var(--bg)", paddingBottom: showLoadMore ? 48 : undefined }}
+        style={{ flex: 1, overflow: "auto", background: "var(--bg)", display: editing ? "none" : undefined, paddingBottom: showLoadMore ? 48 : undefined }}
       >
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
           <MemoizedDiffView
@@ -1993,6 +2036,8 @@ function TextFileViewer({
             prismReady={prismReady}
             isDark={isDark}
           />
+        ) : error ? (
+          <div style={{ padding: 24, color: "var(--text-muted)", fontSize: 12 }}>{error}</div>
         ) : isHtml && effectiveDisplayMode === "preview" && data?.truncated && !htmlFull?.text ? (
           <div style={{ padding: 24, color: "var(--text-dim)", fontSize: 12 }}>
             {htmlFull?.error ?? t("i18n.loading")}

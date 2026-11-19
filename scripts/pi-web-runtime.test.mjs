@@ -120,6 +120,55 @@ for (const failure of [null, 'probe', 'drain', 'replacement']) {
   });
 }
 
+for (const outcome of ['complete', 'build-failed', 'idle-timeout', 'rolled-back']) {
+  test(`source build ${outcome}: never registers an unverified build or interrupts a busy service`, async t => {
+    const { config, file, job, folder } = await fixture(t);
+    config.sourceRoot = path.join(folder, 'checkout');
+    config.releaseStore = path.join(folder, 'releases');
+    const builtRoot = path.join(config.releaseStore, 'candidate', 'projects', 'pi-web');
+    await fs.cp(config.targetRoot, builtRoot, { recursive: true });
+    await fs.writeFile(path.join(builtRoot, '.next/BUILD_ID'), 'built');
+    helper.atomicJson(file, config);
+    helper.atomicJson(path.join(config.stateDir, 'refresh.json'), { ...job, action: 'build-and-restart', state: 'building', target: null });
+    const events = [];
+    let drains = 0;
+    await helper.refresh(file, job.id, 12345, 'old-instance', {
+      delayMs: 0,
+      idleTimeoutMs: outcome === 'idle-timeout' ? 0 : 5000,
+      buildLocalRelease: async (options) => {
+        events.push('build');
+        assert.equal(options.sourceRoot, config.sourceRoot);
+        assert.equal(options.activeRoot, config.activeRoot);
+        assert.equal(helper.gateActive(config), false);
+        assert.equal(helper.readJob(config).state, 'building');
+        assert.equal(helper.readConfig(file).targetRoot, config.targetRoot);
+        if (outcome === 'build-failed') throw new Error('compiler failed');
+        return { root: builtRoot };
+      },
+      freePort: async () => 30249,
+      startNext: (release, port) => { events.push(['start', release, port]); return { release, port, unref() {} }; },
+      ready: async child => {
+        if (outcome === 'rolled-back' && child.release === builtRoot && child.port === config.port) throw new Error('failed after switch');
+      },
+      stopChild: async () => {},
+      call: async action => {
+        events.push(action);
+        if (action === 'drain' && ++drains === 1) throw Object.assign(new Error('busy'), { code: 'BUSY' });
+      },
+      pause: async () => assert.equal(helper.readJob(config).state, 'waiting-for-idle'),
+      kill: () => events.push('kill'), waitGone: async () => {},
+    });
+    const result = helper.readJob(config);
+    assert.equal(result.state, ['complete','rolled-back'].includes(outcome) ? outcome : 'failed');
+    if (result.state === 'failed') assert.equal(result.failure, outcome);
+    assert.equal(events.includes('kill'), ['complete','rolled-back'].includes(outcome));
+    assert.equal(helper.readConfig(file).activeRoot, outcome === 'complete' ? builtRoot : config.activeRoot);
+    assert.equal(helper.readConfig(file).targetRoot, outcome === 'complete' ? builtRoot : config.targetRoot);
+    if (outcome === 'complete') assert.equal(result.target.buildId, 'built');
+    assert.equal(await fs.stat(path.join(config.stateDir, 'refresh.lock')).catch(() => null), null);
+  });
+}
+
 test('concurrent clicks are refused by the filesystem lock', async t => {
   const { file } = await fixture(t);
   assert.throws(() => helper.begin(file, 12345, 'instance'), error => error.status === 409);

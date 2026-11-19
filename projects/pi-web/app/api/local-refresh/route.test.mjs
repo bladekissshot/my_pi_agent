@@ -21,8 +21,8 @@ test('GET does not launch a helper; tasks, terminals and startup locks prevent r
     const helperPath = path.join(root, 'helper.cjs');
     await fs.writeFile(configFile, JSON.stringify({ helperPath, stateDir: root, port: 30141 }));
     await fs.writeFile(helperPath, `exports.readConfig=()=>({stateDir:${JSON.stringify(root)}});
-      exports.status=()=>({target:{webVersion:'0.17.0',sdkVersion:'1.5.2',buildId:'test'},targetError:null,job:null});
-      exports.begin=()=>{require('node:fs').writeFileSync(${JSON.stringify(path.join(root, 'started'))},'started');return{id:'test',state:'checking'};};`);
+      exports.status=()=>({target:{webVersion:'0.17.0',sdkVersion:'1.5.2',buildId:'test'},targetError:null,job:null,buildAvailable:true});
+      exports.begin=(_file,_pid,_instance,action)=>{require('node:fs').writeFileSync(${JSON.stringify(path.join(root, 'started'))},action);return{id:'test',state:action==='restart'?'checking':'building'};};`);
     process.env.PI_WEB_LOCAL_REFRESH_CONFIG = configFile;
     process.env.PI_WEB_RUNTIME_INSTANCE = 'test-instance';
     globalThis.__piSessions = new Map();
@@ -39,9 +39,14 @@ test('GET does not launch a helper; tasks, terminals and startup locks prevent r
       assert.equal((await POST(request('POST', { action: 'restart' }))).status, 409, busy);
     }
     assert.equal(await fs.stat(path.join(root, 'started')).catch(() => null), null);
+    assert.equal((await POST(request('POST', { action: 'build-and-restart', sourceRoot: 'other' }))).status, 400);
+    assert.equal((await POST(request('POST', { action: 'build-and-restart' }, { origin: 'https://untrusted.invalid' }))).status, 403);
+    assert.equal(await fs.stat(path.join(root, 'started')).catch(() => null), null);
+    assert.equal((await POST(request('POST', { action: 'build-and-restart' }))).status, 202, 'building is permitted while a startup is busy');
+    assert.equal(await fs.readFile(path.join(root, 'started'), 'utf8'), 'build-and-restart');
     globalThis.__piSessions = new Map(); globalThis.__piWebTerminals = new Map(); globalThis.__piStartLocks = new Map();
     assert.equal((await POST(request('POST', { action: 'restart' }))).status, 202);
-    assert.equal(await fs.readFile(path.join(root, 'started'), 'utf8'), 'started');
+    assert.equal(await fs.readFile(path.join(root, 'started'), 'utf8'), 'restart');
     assert.equal((await POST(request('POST', { action: 'shutdown', id: 'test', instance: 'test-instance' }))).status, 403);
     assert.equal((await POST(request('POST', { action: 'restart' }, { origin: 'https://attacker.invalid' }))).status, 403);
   } finally {
